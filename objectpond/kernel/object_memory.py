@@ -426,10 +426,6 @@ class SystemDictionary:
         self._sync_method_into_class_source(rec, actual_name, dedented)
         self._rebind_live_bound_methods(rec.cls_obj, actual_name)
 
-        # If __init__ was hot-patched, re-initialize all live instances in place
-        if actual_name == "__init__":
-            self._reinitialize_live_instances(rec.cls_obj)
-
         world = self.global_namespace.get("World")
         if world is not None and hasattr(world, "changed"):
             world.changed()
@@ -521,10 +517,8 @@ class SystemDictionary:
             is_user_defined=True,
         )
 
-        # Rebind bound methods and re-initialize live instances across the system
+        # Rebind bound methods on live instances without resetting their __init__ state
         self._rebind_live_bound_methods(new_cls)
-        if record_change and old_cls is not None:
-            self._reinitialize_live_instances(new_cls)
 
         if world is not None and hasattr(world, "changed"):
             world.changed()

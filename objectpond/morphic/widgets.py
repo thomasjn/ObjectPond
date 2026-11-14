@@ -312,9 +312,8 @@ class CodeEditorMorph(Morph):
         self.corner_radius = 2.0
         self._dragging_scrollbar: bool = False
         self._scrollbar_drag_offset: float = 0.0
-
-    def _visible_lines(self) -> int:
-        return max(1, int((self.height - 8.0) // self.LINE_HEIGHT))
+        self._dragging_hscrollbar: bool = False
+        self._hscrollbar_drag_offset: float = 0.0
 
     def _visible_cols(self) -> int:
         return max(
@@ -322,13 +321,24 @@ class CodeEditorMorph(Morph):
             int((self.width - self.GUTTER_WIDTH - self.SCROLLBAR_WIDTH - 12.0) // self.CHAR_WIDTH),
         )
 
+    def _max_scroll_col(self) -> int:
+        max_len = max((len(line) for line in self.text.split("\n")), default=0)
+        return max(0, max_len - self._visible_cols())
+
+    def _needs_hscrollbar(self) -> bool:
+        return self._max_scroll_col() > 0
+
+    def _visible_lines(self) -> int:
+        h_reserve = self.SCROLLBAR_WIDTH if self._needs_hscrollbar() else 0.0
+        return max(1, int((self.height - 8.0 - h_reserve) // self.LINE_HEIGHT))
+
     def _max_scroll_line(self) -> int:
         total_lines = len(self.text.split("\n"))
         return max(0, total_lines - self._visible_lines())
 
     def _clamp_scroll(self) -> None:
         self.scroll_line = max(0, min(self._max_scroll_line(), self.scroll_line))
-        self.scroll_col = max(0, getattr(self, "scroll_col", 0))
+        self.scroll_col = max(0, min(self._max_scroll_col(), getattr(self, "scroll_col", 0)))
 
     def set_extent(self, w: float, h: float) -> None:
         super().set_extent(w, h)
@@ -366,6 +376,45 @@ class CodeEditorMorph(Morph):
         self.selection_end = len(self.text)
         self.cursor_idx = len(self.text)
         self.changed()
+
+    def _get_clipboard(self) -> str:
+        w = self.world()
+        if w is not None and hasattr(w, "get_clipboard_text"):
+            return w.get_clipboard_text()
+        return getattr(CodeEditorMorph, "_clipboard_fallback", "")
+
+    def _set_clipboard(self, text: str) -> None:
+        w = self.world()
+        if w is not None and hasattr(w, "set_clipboard_text"):
+            w.set_clipboard_text(text)
+        else:
+            CodeEditorMorph._clipboard_fallback = str(text)
+
+    def copy_selection(self) -> str:
+        if not self.has_selection():
+            return ""
+        lo, hi = self.get_selection_range()
+        selected = self.text[lo:hi]
+        self._set_clipboard(selected)
+        return selected
+
+    def cut_selection(self) -> str:
+        if not self.has_selection():
+            return ""
+        selected = self.copy_selection()
+        self.insert_text("")
+        return selected
+
+    def paste_from_clipboard(self, text: Optional[str] = None) -> str:
+        clip = self._get_clipboard() if text is None else str(text)
+        normalized = clip.replace("\r\n", "\n").replace("\r", "\n")
+        if normalized:
+            self.insert_text(normalized)
+        return normalized
+
+    def on_paste(self, text: str) -> None:
+        self._set_clipboard(str(text))
+        self.paste_from_clipboard(text)
 
     def has_selection(self) -> bool:
         return (
@@ -526,6 +575,8 @@ class CodeEditorMorph(Morph):
             and abs((self.y + self.height) - (self.owner.y + self.owner.height)) <= 8.0
         ):
             bottom_pad = 14.0
+        if self._needs_hscrollbar():
+            bottom_pad = max(bottom_pad, self.SCROLLBAR_WIDTH + 2.0)
         track_h = max(20.0, self.height - bottom_pad)
         thumb_h = max(20.0, min(track_h, track_h * (vis / float(total))))
         max_sc = max(1, total - vis)
@@ -533,10 +584,35 @@ class CodeEditorMorph(Morph):
         thumb_y = track_y + ratio * (track_h - thumb_h)
         return (track_x, track_y, track_w, track_h, thumb_y, thumb_h)
 
+    def _hscrollbar_geometry(self) -> Optional[Tuple[float, float, float, float, float, float]]:
+        max_sc = self._max_scroll_col()
+        if max_sc <= 0:
+            return None
+        vis = self._visible_cols()
+        max_len = max_sc + vis
+        track_x = self.x + self.GUTTER_WIDTH + 1.0
+        track_y = self.y + self.height - self.SCROLLBAR_WIDTH - 1.0
+        right_pad = 2.0
+        if self._scrollbar_geometry() is not None:
+            right_pad = max(right_pad, self.SCROLLBAR_WIDTH + 2.0)
+        elif (
+            self.owner is not None
+            and hasattr(self.owner, "RESIZE_GRIP_SIZE")
+            and abs((self.x + self.width) - (self.owner.x + self.owner.width)) <= 8.0
+            and abs((self.y + self.height) - (self.owner.y + self.owner.height)) <= 8.0
+        ):
+            right_pad = 14.0
+        track_w = max(20.0, (self.x + self.width - right_pad) - track_x)
+        track_h = self.SCROLLBAR_WIDTH
+        thumb_w = max(20.0, min(track_w, track_w * (vis / float(max_len))))
+        ratio = max(0.0, min(1.0, getattr(self, "scroll_col", 0) / float(max_sc)))
+        thumb_x = track_x + ratio * (track_w - thumb_w)
+        return (track_x, track_y, track_w, track_h, thumb_x, thumb_w)
+
     def on_mouse_down(self, px: float, py: float, button: int) -> None:
         if button == 0:
             sb = self._scrollbar_geometry()
-            if sb is not None and px >= sb[0]:
+            if sb is not None and px >= sb[0] and py <= sb[1] + sb[3]:
                 _tx, ty, _tw, th, thumb_y, thumb_h = sb
                 if thumb_y <= py <= thumb_y + thumb_h:
                     self._dragging_scrollbar = True
@@ -546,6 +622,21 @@ class CodeEditorMorph(Morph):
                 else:
                     self.scroll_line = min(
                         self._max_scroll_line(), self.scroll_line + self._visible_lines()
+                    )
+                self.changed()
+                return
+
+            hsb = self._hscrollbar_geometry()
+            if hsb is not None and py >= hsb[1] and hsb[0] <= px <= hsb[0] + hsb[2]:
+                _tx, _ty, _tw, _th, thumb_x, thumb_w = hsb
+                if thumb_x <= px <= thumb_x + thumb_w:
+                    self._dragging_hscrollbar = True
+                    self._hscrollbar_drag_offset = px - thumb_x
+                elif px < thumb_x:
+                    self.scroll_col = max(0, getattr(self, "scroll_col", 0) - self._visible_cols())
+                else:
+                    self.scroll_col = min(
+                        self._max_scroll_col(), getattr(self, "scroll_col", 0) + self._visible_cols()
                     )
                 self.changed()
                 return
@@ -571,6 +662,19 @@ class CodeEditorMorph(Morph):
                 self.changed()
             return
 
+        if getattr(self, "_dragging_hscrollbar", False):
+            hsb = self._hscrollbar_geometry()
+            if hsb is not None:
+                tx, _ty, tw, _th, _thumb_x, thumb_w = hsb
+                travel = max(1.0, tw - thumb_w)
+                ratio = max(
+                    0.0,
+                    min(1.0, (px - getattr(self, "_hscrollbar_drag_offset", 0.0) - tx) / travel),
+                )
+                self.scroll_col = int(round(ratio * self._max_scroll_col()))
+                self.changed()
+            return
+
         # Auto-scroll when drag-selecting above or below the viewport
         if py < self.y + 4.0:
             self.scroll_line = max(0, self.scroll_line - 1)
@@ -584,6 +688,7 @@ class CodeEditorMorph(Morph):
 
     def on_mouse_up(self, px: float, py: float, button: int) -> None:
         self._dragging_scrollbar = False
+        self._dragging_hscrollbar = False
 
     def on_mouse_wheel(self, px: float, py: float, delta_y: float) -> None:
         if delta_y == 0:
@@ -644,6 +749,15 @@ class CodeEditorMorph(Morph):
                 return
             if k_lower == "a":
                 self.select_all()
+                return
+            if k_lower == "c":
+                self.copy_selection()
+                return
+            if k_lower == "x":
+                self.cut_selection()
+                return
+            if k_lower == "v":
+                self.paste_from_clipboard()
                 return
             if key == "ArrowUp":
                 self._move_cursor(0, extend_selection=shift_key)
@@ -736,12 +850,17 @@ class CodeEditorMorph(Morph):
             cursor_row, cursor_col = self._index_to_row_col(self.cursor_idx)
             scroll_col = getattr(self, "scroll_col", 0)
             sb = self._scrollbar_geometry()
+            hsb = self._hscrollbar_geometry()
             text_clip_w = max(
                 10.0,
                 self.width
                 - self.GUTTER_WIDTH
                 - (self.SCROLLBAR_WIDTH if sb is not None else 0.0)
                 - 2.0,
+            )
+            text_clip_h = max(
+                10.0,
+                self.height - (self.SCROLLBAR_WIDTH if hsb is not None else 0.0) - 2.0,
             )
 
             w = self.world()
@@ -763,8 +882,8 @@ class CodeEditorMorph(Morph):
                     font="11px monospace",
                 )
 
-            # Clip code text & caret to text region between gutter and scrollbar
-            canvas.push_clip(self.x + self.GUTTER_WIDTH, self.y + 1, text_clip_w, self.height - 2)
+            # Clip code text & caret to text region between gutter and scrollbar(s)
+            canvas.push_clip(self.x + self.GUTTER_WIDTH, self.y + 1, text_clip_w, text_clip_h)
             try:
                 for vis_i in range(max_visible):
                     line_idx = self.scroll_line + vis_i
@@ -827,6 +946,17 @@ class CodeEditorMorph(Morph):
                 )
                 canvas.fill_round_rect(
                     tx + 2, thumb_y, tw - 4, thumb_h, 3.0, thumb_col, "", 0.0
+                )
+
+            # Draw horizontal scrollbar if longest line exceeds visible columns
+            if hsb is not None:
+                tx, ty, tw, th, thumb_x, thumb_w = hsb
+                canvas.fill_rect(tx, ty, tw, th, "#14171d")
+                hthumb_col = (
+                    "#88c0d0" if getattr(self, "_dragging_hscrollbar", False) else "#4c566a"
+                )
+                canvas.fill_round_rect(
+                    thumb_x, ty + 2, thumb_w, th - 4, 3.0, hthumb_col, "", 0.0
                 )
 
             # Unsaved dirty indicator triangle in top-right corner (classic Smalltalk orange corner!)

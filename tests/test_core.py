@@ -62,19 +62,23 @@ class TestKernelAndObjectMemory(unittest.TestCase):
         cls_v1 = self.smalltalk.define_class("User-Objects", src_v1)
         g = cls_v1()
         self.assertEqual(g.speak(), "Kia ora!")
+        g.greeting = "Tēnā koe"
 
-        # Redefine Greeter class with new method; existing instance g should migrate __class__
+        # Redefine Greeter class with new method and new __init__ default;
+        # existing instance g migrates __class__ while preserving its live state,
+        # while newly created instances use the updated __init__.
         src_v2 = (
             "class Greeter(Morph):\n"
             "    def __init__(self, x=10, y=10, w=80, h=30):\n"
             "        super().__init__(x, y, w, h)\n"
-            "        self.greeting = 'Kia ora'\n"
+            "        self.greeting = 'Hello'\n"
             "    def speak(self):\n"
             "        return f'[{self.greeting}]'\n"
         )
         cls_v2 = self.smalltalk.define_class("User-Objects", src_v2)
         self.assertIs(g.__class__, cls_v2)
-        self.assertEqual(g.speak(), "[Kia ora]")
+        self.assertEqual(g.speak(), "[Tēnā koe]")
+        self.assertEqual(cls_v2().speak(), "[Hello]")
 
 
 class TestImageSerialization(unittest.TestCase):
@@ -228,7 +232,7 @@ class TestMorphicAndWidgets(unittest.TestCase):
         self.world.add_morph(editor)
 
         vis = editor._visible_lines()
-        self.assertEqual(vis, 6)
+        self.assertEqual(vis, 5)
         self.assertEqual(editor.scroll_line, 0)
 
         # 1. ArrowDown past visible lines auto-scrolls scroll_line
@@ -272,6 +276,111 @@ class TestMorphicAndWidgets(unittest.TestCase):
         # 5. Resizing editor tall enough to show all lines clamps scroll_line back to 0
         editor.set_extent(300, 900)
         self.assertEqual(editor.scroll_line, 0)
+
+    def test_code_editor_horizontal_scrollbar_only_when_needed(self):
+        # Short lines: horizontal scrollbar must NOT appear
+        editor = CodeEditorMorph(20, 20, 300, 120, text="a = 1\nb = 2\n")
+        self.world.add_morph(editor)
+        self.assertIsNone(editor._hscrollbar_geometry())
+        self.assertEqual(editor._visible_lines(), 6)
+
+        # Long line: horizontal scrollbar appears, reserves bottom height, and supports drag/click
+        editor.set_text("short\n" + ("x" * 120))
+        hsb = editor._hscrollbar_geometry()
+        self.assertIsNotNone(hsb)
+        self.assertEqual(editor._visible_lines(), 5)
+
+        tx, ty, tw, _th, thumb_x, _thumb_w = hsb
+        # Drag thumb to right end of track
+        editor.on_mouse_down(thumb_x + 2, ty + 4, 0)
+        editor.on_mouse_move(tx + tw, ty + 4, tw, 0)
+        editor.on_mouse_up(tx + tw, ty + 4, 0)
+        self.assertEqual(editor.scroll_col, editor._max_scroll_col())
+
+        # Click track to the left of thumb to page left
+        editor.on_mouse_down(tx + 2, ty + 4, 0)
+        editor.on_mouse_up(tx + 2, ty + 4, 0)
+        self.assertEqual(
+            editor.scroll_col,
+            max(0, editor._max_scroll_col() - editor._visible_cols()),
+        )
+
+        # Draw on canvas without error and verify horizontal scrollbar is rendered
+        self.backend.commands.clear()
+        editor.draw_on(self.canvas)
+        self.assertTrue(
+            any(
+                cmd[0] == "fill_rect" and cmd[1] == tx and cmd[2] == ty and cmd[3] == tw
+                for cmd in self.backend.commands
+            )
+        )
+
+        # Replacing with short text hides horizontal scrollbar and clamps scroll_col to 0
+        editor.set_text("hello")
+        self.assertIsNone(editor._hscrollbar_geometry())
+        self.assertEqual(editor.scroll_col, 0)
+        self.backend.commands.clear()
+        editor.draw_on(self.canvas)
+        self.assertFalse(
+            any(
+                cmd[0] == "fill_rect" and cmd[2] == ty
+                for cmd in self.backend.commands
+            )
+        )
+
+        # Resizing wide enough hides horizontal scrollbar
+        editor.set_text("x" * 60)
+        self.assertIsNotNone(editor._hscrollbar_geometry())
+        editor.scroll_col = 10
+        editor.set_extent(800, 120)
+        self.assertIsNone(editor._hscrollbar_geometry())
+        self.assertEqual(editor.scroll_col, 0)
+
+    def test_code_editor_cut_copy_paste_and_world_clipboard(self):
+        ed1 = CodeEditorMorph(10, 10, 260, 120, text="hello world")
+        ed2 = CodeEditorMorph(10, 150, 260, 120, text="prefix ")
+        self.world.add_morph(ed1)
+        self.world.add_morph(ed2)
+
+        # Copy selection from ed1 via Cmd/Ctrl+C
+        self.world.hand.keyboard_focus = ed1
+        ed1.selection_start = 6
+        ed1.selection_end = 11
+        ed1.cursor_idx = 11
+        self.world.handle_key_down("c", meta_key=True)
+        self.assertEqual(self.world.get_clipboard_text(), "world")
+        self.assertEqual(ed1.text, "hello world")
+
+        # Empty selection copy/cut should not clobber clipboard
+        ed1.selection_start = None
+        ed1.selection_end = None
+        self.world.handle_key_down("c", ctrl_key=True)
+        self.assertEqual(self.world.get_clipboard_text(), "world")
+
+        # Paste into ed2 via Ctrl+V
+        self.world.hand.keyboard_focus = ed2
+        ed2.cursor_idx = len(ed2.text)
+        self.world.handle_key_down("v", ctrl_key=True)
+        self.assertEqual(ed2.text, "prefix world")
+
+        # Cut selection from ed2 via Cmd+X and paste back into ed1
+        ed2.selection_start = 0
+        ed2.selection_end = 7
+        self.world.handle_key_down("x", meta_key=True)
+        self.assertEqual(ed2.text, "world")
+        self.assertEqual(self.world.get_clipboard_text(), "prefix ")
+
+        self.world.hand.keyboard_focus = ed1
+        ed1.selection_start = 0
+        ed1.selection_end = 0
+        ed1.cursor_idx = 0
+        self.world.handle_key_down("v", meta_key=True)
+        self.assertEqual(ed1.text, "prefix hello world")
+
+        # Browser-style handle_paste normalizes CRLF and updates clipboard
+        self.world.handle_paste("line1\r\nline2")
+        self.assertEqual(self.world.get_clipboard_text(), "line1\r\nline2")
+        self.assertIn("line1\nline2", ed1.text)
 
 
 if __name__ == "__main__":

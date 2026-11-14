@@ -253,7 +253,7 @@ with open("/tmp/loaded.image", "rb") as fp:
             } catch (exc) {
                 console.error("Export image failed:", exc);
             }
-        } else if (action === "load_image") {
+        } else if (action === "load_image" || action === "import_object") {
             const input = document.createElement("input");
             input.type = "file";
             input.accept = ".image,application/octet-stream";
@@ -261,7 +261,24 @@ with open("/tmp/loaded.image", "rb") as fp:
             input.addEventListener("change", async () => {
                 const file = input.files && input.files[0];
                 if (file) {
-                    await loadImageFromFile(file, "Loaded snapshot from");
+                    if (action === "load_image") {
+                        await loadImageFromFile(file, "Loaded snapshot from");
+                    } else {
+                        try {
+                            const buf = await file.arrayBuffer();
+                            const bytes = new Uint8Array(buf);
+                            window.pyodide.FS.writeFile("/tmp/import_source.image", bytes);
+                            const fnameJson = JSON.stringify(file.name);
+                            window.pyodide.runPython(`
+with open("/tmp/import_source.image", "rb") as fp:
+    world.open_image_object_importer(fp.read(), ${fnameJson})
+    world.changed()
+`);
+                        } catch (exc) {
+                            console.error("Import object failed:", exc);
+                            window.pyodide.runPython(`world.status_message = ${JSON.stringify("Import failed: " + exc.message)}; world.changed()`);
+                        }
+                    }
                 }
                 document.body.removeChild(input);
             });
@@ -401,6 +418,10 @@ with open("/tmp/snapshot.image", "rb") as fp:
             window.addEventListener("keydown", (e) => {
                 const cmd = e.ctrlKey || e.metaKey;
                 const key = e.key.toLowerCase();
+                if (cmd && key === "v") {
+                    // Allow browser 'paste' event to fire synchronously with clipboardData
+                    return;
+                }
                 if (
                     cmd ||
                     e.key === "Tab" ||
@@ -412,7 +433,7 @@ with open("/tmp/snapshot.image", "rb") as fp:
                     e.key === "End" ||
                     e.key.startsWith("Arrow")
                 ) {
-                    if (cmd && ["d", "p", "i", "s", "a", "c", "v", "x", "z"].includes(key)) {
+                    if (cmd && ["d", "p", "i", "s", "a", "c", "x", "z"].includes(key)) {
                         e.preventDefault();
                     } else if (
                         e.key === "Tab" ||
@@ -425,10 +446,30 @@ with open("/tmp/snapshot.image", "rb") as fp:
                         e.preventDefault();
                     }
                 }
+                const isCopyOrCut = cmd && (key === "c" || key === "x");
+                const prevClipSeq = isCopyOrCut
+                    ? pyodide.runPython("getattr(world, '_clipboard_seq', 0)")
+                    : 0;
                 const pyKey = JSON.stringify(e.key);
                 pyodide.runPython(
                     `world.handle_key_down(${pyKey}, ctrl_key=${e.ctrlKey ? "True" : "False"}, meta_key=${e.metaKey ? "True" : "False"}, shift_key=${e.shiftKey ? "True" : "False"}, alt_key=${e.altKey ? "True" : "False"})`
                 );
+                if (isCopyOrCut) {
+                    const nextClipSeq = pyodide.runPython("getattr(world, '_clipboard_seq', 0)");
+                    if (nextClipSeq !== prevClipSeq && navigator.clipboard && navigator.clipboard.writeText) {
+                        const clipText = pyodide.runPython("world.get_clipboard_text()");
+                        navigator.clipboard.writeText(clipText).catch(() => {});
+                    }
+                }
+            });
+
+            window.addEventListener("paste", (e) => {
+                const text = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+                if (text !== undefined && text !== null) {
+                    e.preventDefault();
+                    const pyText = JSON.stringify(text);
+                    pyodide.runPython(`world.handle_paste(${pyText})`);
+                }
             });
 
             window.addEventListener("contextmenu", (e) => {

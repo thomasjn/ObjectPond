@@ -43,8 +43,8 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         atoms.step()
         self.assertEqual(getattr(atoms, "tick_count", 0), 1)
 
-        # Also verify changing num_atoms from 14 to 4 in the class definition updates
-        # both running instances on the World AND newly spawned instances!
+        # Also verify changing num_atoms from 14 to 4 in the class definition preserves
+        # existing running instances' state while newly spawned instances get 4 atoms.
         running_atoms = [
             m for m in self.world.submorphs if m.__class__.__name__ == "BouncingAtomsMorph"
         ][0]
@@ -56,21 +56,23 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         res_cls = browser.accept_editor()
         self.assertFalse(isinstance(res_cls, Exception), f"Unexpected compile error: {res_cls}")
 
-        # Running instance immediately re-initialized with 4 atoms
-        self.assertEqual(len(running_atoms.atoms), 4)
+        # Existing running instance preserves its 14 atoms
+        self.assertEqual(len(running_atoms.atoms), 14)
 
-        # Newly spawned instance from World menu/menubar also has 4 atoms
+        # Newly spawned instance from World menu/menubar has 4 atoms
         spawned_atoms = self.world.spawn_bouncing_atoms()
         self.assertEqual(len(spawned_atoms.atoms), 4)
 
-        # Also verify editing __init__ directly in the method pane updates running instances
-        # and syncs back into the full class definition source
+        # Also verify editing __init__ directly in the method pane affects new instances
+        # without resetting existing instances, and syncs back into the full class definition source
         browser.select_method("__init__")
         init_src_6 = browser.editor.text.replace("num_atoms: int = 4", "num_atoms: int = 6")
         browser.editor.set_text(init_src_6)
         browser.accept_editor()
-        self.assertEqual(len(running_atoms.atoms), 6)
-        self.assertEqual(len(spawned_atoms.atoms), 6)
+        self.assertEqual(len(running_atoms.atoms), 14)
+        self.assertEqual(len(spawned_atoms.atoms), 4)
+        spawned_atoms_6 = self.world.spawn_bouncing_atoms()
+        self.assertEqual(len(spawned_atoms_6.atoms), 6)
         browser.select_method(None)
         self.assertIn("num_atoms: int = 6", browser.editor.text)
 
@@ -78,18 +80,23 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         res_method = browser.accept_editor()
         self.assertEqual(res_method, "draw_on")
 
-        # Verify self-editing SystemBrowserWindow itself updates its own live title on Accept!
+        # Verify editing SystemBrowserWindow preserves the existing browser's live state
+        # while newly opened SystemBrowserWindow instances use the updated title.
         browser.select_category("Tools-Browser")
         browser.select_class("SystemBrowserWindow")
         browser.select_method(None)
+        old_browser_title = browser.title
         new_browser_src = browser.editor.text.replace(
             'title="System Browser"', 'title="Hot Browser"'
         )
         browser.editor.set_text(new_browser_src)
         browser.accept_editor()
-        self.assertIn("Hot Browser", browser.title)
+        self.assertEqual(browser.title, old_browser_title)
+        new_browser = self.smalltalk.get_class("SystemBrowserWindow")(self.world)
+        self.assertIn("Hot Browser", new_browser.title)
 
-        # Verify editing WorkspaceWindow updates the already-open WorkspaceWindow on the desktop!
+        # Verify editing WorkspaceWindow.__init__ preserves the already-open WorkspaceWindow
+        # while newly opened WorkspaceWindow instances get the new title.
         open_ws = [
             m for m in self.world.submorphs if m.__class__.__name__ == "WorkspaceWindow"
         ][0]
@@ -101,7 +108,9 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         )
         browser.editor.set_text(new_ws_init)
         browser.accept_editor()
-        self.assertEqual(open_ws.title, "Live Scratchpad")
+        self.assertEqual(open_ws.title, "Workspace")
+        new_ws = self.smalltalk.get_class("WorkspaceWindow")(self.world)
+        self.assertEqual(new_ws.title, "Live Scratchpad")
 
     def test_inspector_live_object_mutation(self):
         atoms = BouncingAtomsMorph(100, 100, 200, 150)

@@ -262,6 +262,31 @@ class TestMCPServerHTTPAndBridge(unittest.TestCase):
             rec = st.record_exception(exc, context="test")
             self.assertEqual(rec["frames"][-1]["locals"]["api_token"], "<redacted>")
 
+    def test_import_object_from_image_file(self):
+        from objectpond.kernel.image import ImageSerializer
+
+        src_st, src_world = create_default_environment(640, 480)
+        badge_cls = src_st.define_class(
+            "User-Objects",
+            "class BadgeMorph(Morph):\n"
+            "    def __init__(self, x=20, y=20, width=60, height=30):\n"
+            "        super().__init__(x, y, width, height, color='#88c0d0')\n"
+            "        self.tag = 'imported-ok'\n",
+        )
+        src_world.add_morph(badge_cls())
+        img_bytes = ImageSerializer(src_st).save_image_bytes(src_world)
+
+        dst_st, dst_world = create_default_environment(640, 480)
+        self.assertIsNone(dst_st.get_class("BadgeMorph"))
+        win = dst_world.open_image_object_importer(img_bytes, "badge.image")
+        idx = next(i for i, c in enumerate(win.candidates) if c["class"] == "BadgeMorph")
+        win.object_list.select_index(idx, notify=True)
+        imported = win.on_import_clicked()
+
+        self.assertIsNotNone(dst_st.get_class("BadgeMorph"))
+        self.assertEqual(imported.tag, "imported-ok")
+        self.assertIn(imported, dst_world.submorphs)
+
 
 if __name__ == "__main__":
     unittest.main()

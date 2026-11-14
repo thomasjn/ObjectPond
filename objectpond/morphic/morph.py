@@ -220,6 +220,9 @@ class Morph:
     ) -> None:
         pass
 
+    def on_paste(self, text: str) -> None:
+        pass
+
     def cycle_color(self) -> None:
         try:
             idx = (self.PALETTE.index(self.color) + 1) % len(self.PALETTE)

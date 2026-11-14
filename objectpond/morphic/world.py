@@ -197,6 +197,8 @@ class WorldMorph(Morph):
         self.workspace_globals: Dict[str, Any] = {}
         self.status_message: str = "Ready — Alt+Click any Morph for Morphic Halos"
         self.stepping_paused: bool = False
+        self.clipboard_text: str = ""
+        self._clipboard_seq: int = 0
         self._host_action_callback: Optional[Callable[[str, Any], None]] = None
         self.bind_smalltalk(smalltalk)
 
@@ -236,6 +238,7 @@ class WorldMorph(Morph):
             ("save_image", "Save Image", 830),
             ("export_image", "Export .image", 930),
             ("load_image", "Load .image", 1054),
+            ("import_object", "Import Object", 1166),
         ]
         result = []
         for idx, (action_id, label, x_pos) in enumerate(items):
@@ -279,7 +282,7 @@ class WorldMorph(Morph):
 
         for action_id, label, bx, bw in self._menubar_items():
             is_brand = action_id == "objectpond"
-            is_save = action_id in ("save_image", "export_image", "load_image")
+            is_save = action_id in ("save_image", "export_image", "load_image", "import_object")
             bg = "#3b4252" if is_brand else ("#2a4d3e" if is_save else "#252b37")
             fg = "#88c0d0" if is_brand else ("#a3be8c" if is_save else "#e5e9f0")
             canvas.fill_round_rect(bx, 3, bw, 22, 4, bg, "#434c5e", 1.0)
@@ -288,7 +291,7 @@ class WorldMorph(Morph):
 
         # Right-aligned status message
         status_w = len(self.status_message) * 7.2
-        if self.width - status_w > 1180:
+        if self.width - status_w > 1295:
             canvas.draw_text(
                 self.status_message,
                 self.width - status_w - 14,
@@ -475,6 +478,20 @@ class WorldMorph(Morph):
             target.on_mouse_wheel(px, py, delta_y)
             self.changed()
 
+    def get_clipboard_text(self) -> str:
+        return getattr(self, "clipboard_text", "")
+
+    def set_clipboard_text(self, text: str) -> None:
+        self.clipboard_text = str(text)
+        self._clipboard_seq = getattr(self, "_clipboard_seq", 0) + 1
+
+    def handle_paste(self, text: str) -> None:
+        pasted = str(text)
+        self.set_clipboard_text(pasted)
+        if self.hand.keyboard_focus is not None:
+            self.hand.keyboard_focus.on_paste(pasted)
+            self.changed()
+
     def handle_key_down(
         self,
         key: str,
@@ -558,6 +575,9 @@ class WorldMorph(Morph):
         elif action_id == "load_image":
             self.status_message = "Select a .image file to load..."
             self.trigger_host_action("load_image")
+        elif action_id == "import_object":
+            self.status_message = "Select a .image file to import an object from..."
+            self.trigger_host_action("import_object")
 
     def _open_world_menu(self, x: float, y: float) -> None:
         from .widgets import MenuMorph
@@ -632,6 +652,18 @@ class WorldMorph(Morph):
             exc_record = self.smalltalk.get_exception(exc_record_or_id)
         cls = self._resolve_class("DebuggerWindow", DebuggerWindow)
         win = cls(self, exc_record=exc_record)
+        self.add_morph(win)
+        return win
+
+    def open_image_object_importer(
+        self,
+        image_bytes: bytes,
+        filename: str = "objectpond.image",
+    ) -> Optional[Morph]:
+        from objectpond.tools.importer import ImageObjectImporterWindow
+
+        cls = self._resolve_class("ImageObjectImporterWindow", ImageObjectImporterWindow)
+        win = cls(self, image_bytes=image_bytes, filename=filename)
         self.add_morph(win)
         return win
 

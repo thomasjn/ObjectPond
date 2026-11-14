@@ -16,6 +16,7 @@ from objectpond.tools.workspace import WorkspaceWindow
 from objectpond.tools.inspector import InspectorWindow
 from objectpond.tools.transcript import TranscriptWindow, ChangesViewerWindow
 from objectpond.tools.debugger import DebuggerWindow
+from objectpond.tools.importer import ImageObjectImporterWindow
 from objectpond.tools.demos import BouncingAtomsMorph, BitBltPaintMorph
 
 
@@ -51,6 +52,7 @@ def create_default_environment(
         ("Tools-Transcript", TranscriptWindow),
         ("Tools-Transcript", ChangesViewerWindow),
         ("Tools-Debugger", DebuggerWindow),
+        ("Tools-Importer", ImageObjectImporterWindow),
         ("User-Objects", BouncingAtomsMorph),
         ("User-Objects", BitBltPaintMorph),
     ]

@@ -277,15 +277,206 @@ class ImageSerializer:
         json_bytes = json.dumps(snap, separators=(",", ":")).encode("utf-8")
         return gzip.compress(json_bytes, compresslevel=6)
 
-    def load_image_bytes(self, data: bytes) -> Any:
+    @classmethod
+    def parse_image_bytes(cls, data: bytes) -> Dict[str, Any]:
         if data[:2] == b"\x1f\x8b":
-            json_bytes = self._safe_zlib_decompress(data, wbits=16 + zlib.MAX_WBITS)
+            json_bytes = cls._safe_zlib_decompress(data, wbits=16 + zlib.MAX_WBITS)
         else:
-            if len(data) > self.MAX_DECOMPRESSED_BYTES:
+            if len(data) > cls.MAX_DECOMPRESSED_BYTES:
                 raise ValueError("Image payload exceeds maximum allowed size")
             json_bytes = data
         snap = json.loads(json_bytes.decode("utf-8"))
+        if not isinstance(snap, dict) or "objects" not in snap:
+            raise ValueError("Invalid ObjectPond image snapshot")
+        return snap
+
+    def load_image_bytes(self, data: bytes) -> Any:
+        snap = self.parse_image_bytes(data)
         return self.restore_from_snapshot_dict(snap)
+
+    @staticmethod
+    def list_importable_objects(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Lists top-level morphs and workspace objects available to import from a snapshot."""
+        objects_by_id = {e["id"]: e for e in snapshot.get("objects", [])}
+        world_ref = snapshot.get("world")
+        world_oid = world_ref.get("$obj") if isinstance(world_ref, dict) else None
+        world_entry = objects_by_id.get(world_oid) if world_oid is not None else None
+
+        candidate_ids: List[int] = []
+        seen = set()
+
+        def _add_oid(oid: Optional[int]) -> None:
+            if isinstance(oid, int) and oid not in seen and oid != world_oid:
+                seen.add(oid)
+                candidate_ids.append(oid)
+
+        if world_entry:
+            w_state = world_entry.get("state", {})
+            for item in (w_state.get("submorphs") or {}).get("$list", []):
+                if isinstance(item, dict) and "$obj" in item:
+                    _add_oid(item["$obj"])
+            for gval in (w_state.get("workspace_globals") or {}).get("$dict", {}).values():
+                if isinstance(gval, dict) and "$obj" in gval:
+                    _add_oid(gval["$obj"])
+
+        # Fallback: include any remaining non-world objects if none found
+        if not candidate_ids:
+            for e in snapshot.get("objects", []):
+                if e.get("class") not in ("WorldMorph", "HandMorph", "HaloMorph"):
+                    _add_oid(e["id"])
+
+        results: List[Dict[str, Any]] = []
+        for oid in candidate_ids:
+            e = objects_by_id.get(oid)
+            if not e:
+                continue
+            cls_name = e.get("class", "Object")
+            state = e.get("state", {})
+            title = state.get("title")
+            label_txt = state.get("label")
+            detail = f"'{title}'" if isinstance(title, str) else (f"'{label_txt}'" if isinstance(label_txt, str) else "")
+            if not detail and "x" in state and "y" in state:
+                detail = f"({int(state.get('x', 0))}, {int(state.get('y', 0))}, {int(state.get('width', 0))}x{int(state.get('height', 0))})"
+            elif "form" in e:
+                f = e["form"]
+                detail = f"{f.get('width', 0)}x{f.get('height', 0)} Form"
+            label = f"[{oid}] {cls_name}" + (f" {detail}" if detail else "")
+            results.append({"id": oid, "class": cls_name, "label": label, "entry": e})
+        return results
+
+    def import_object_from_snapshot(
+        self,
+        snapshot: Dict[str, Any],
+        target_oid: int,
+        target_world: Optional[Any] = None,
+    ) -> Any:
+        """Hydrates a single object (and its owned subgraph) from a snapshot into the current image."""
+        self._ensure_core_classes_registered()
+        objects_by_id = {e["id"]: e for e in snapshot.get("objects", [])}
+        if target_oid not in objects_by_id:
+            raise KeyError(f"Object ID {target_oid} not found in snapshot")
+
+        world_ref = snapshot.get("world")
+        world_oid = world_ref.get("$obj") if isinstance(world_ref, dict) else None
+
+        # Collect reachable object IDs without traversing back into the old WorldMorph
+        subgraph_ids: List[int] = []
+        visited = set()
+
+        def _collect(val: Any) -> None:
+            if isinstance(val, dict):
+                if "$obj" in val:
+                    oid = val["$obj"]
+                    if oid == world_oid or oid in visited or oid not in objects_by_id:
+                        return
+                    visited.add(oid)
+                    subgraph_ids.append(oid)
+                    entry = objects_by_id[oid]
+                    for k, v in entry.get("state", {}).items():
+                        if k == "owner" and isinstance(v, dict) and v.get("$obj") == world_oid:
+                            continue
+                        _collect(v)
+                elif "$bound_method" in val:
+                    _collect(val["$bound_method"].get("self"))
+                else:
+                    for v in val.values():
+                        _collect(v)
+            elif isinstance(val, list):
+                for item in val:
+                    _collect(item)
+
+        _collect({"$obj": target_oid})
+        needed_classes = {objects_by_id[oid]["class"] for oid in subgraph_ids}
+
+        # Install missing user classes and their modified methods from the snapshot
+        for ucls in snapshot.get("user_classes", []):
+            if ucls["name"] in needed_classes or self.smalltalk.get_class(ucls["name"]) is None:
+                cls_obj = self.smalltalk.define_class(
+                    category=ucls["category"],
+                    class_source=ucls["source"],
+                    record_change=True,
+                    author="import",
+                )
+                rec = self.smalltalk.get_class_record(cls_obj.__name__)
+                if rec and "protocols" in ucls:
+                    rec.protocols.update(ucls["protocols"])
+
+        for mod in snapshot.get("modified_methods", []):
+            if mod["class"] in needed_classes and self.smalltalk.get_class(mod["class"]) is not None:
+                self.smalltalk.compile_and_install_method(
+                    class_name=mod["class"],
+                    method_name=mod["method"],
+                    source_code=mod["source"],
+                    protocol=mod.get("protocol", "operations"),
+                    record_change=True,
+                    author="import",
+                )
+
+        from objectpond.morphic.canvas import Form
+        from objectpond.morphic.morph import Morph
+
+        instances: Dict[int, Any] = {}
+        deferred_bound_methods: List[Tuple[Any, str, Dict[str, Any]]] = []
+
+        for oid in subgraph_ids:
+            entry = objects_by_id[oid]
+            cls_name = entry["class"]
+            if cls_name == "Form" and "form" in entry:
+                finfo = entry["form"]
+                raw = self._safe_zlib_decompress(base64.b64decode(finfo["data"].encode("ascii")))
+                instances[oid] = Form.from_bytes(finfo["width"], finfo["height"], raw)
+            else:
+                cls_obj = self.smalltalk.get_class(cls_name) or Morph
+                instances[oid] = cls_obj.__new__(cls_obj)
+
+        def decode_val(val: Any) -> Any:
+            if val is None or isinstance(val, (bool, int, float, str)):
+                return val
+            if isinstance(val, dict):
+                if "$obj" in val:
+                    oid = val["$obj"]
+                    if oid == world_oid:
+                        return target_world
+                    return instances.get(oid)
+                if "$ref_global" in val and val["$ref_global"] == "Smalltalk":
+                    return self.smalltalk
+                if "$list" in val:
+                    return [decode_val(x) for x in val["$list"]]
+                if "$tuple" in val:
+                    return tuple(decode_val(x) for x in val["$tuple"])
+                if "$set" in val:
+                    return set(decode_val(x) for x in val["$set"])
+                if "$dict" in val:
+                    return {k: decode_val(v) for k, v in val["$dict"].items()}
+            return val
+
+        for oid in subgraph_ids:
+            entry = objects_by_id[oid]
+            if "form" in entry:
+                continue
+            inst = instances[oid]
+            for k, v in entry.get("state", {}).items():
+                if str(k).startswith("__"):
+                    continue
+                if isinstance(v, dict) and "$bound_method" in v:
+                    deferred_bound_methods.append((inst, k, v["$bound_method"]))
+                else:
+                    setattr(inst, k, decode_val(v))
+
+        for inst, attr_name, bm in deferred_bound_methods:
+            target = decode_val(bm["self"])
+            func_name = bm["func"]
+            if target is not None and hasattr(target, func_name):
+                setattr(inst, attr_name, getattr(target, func_name))
+            else:
+                setattr(inst, attr_name, None)
+
+        root_obj = instances[target_oid]
+        if target_world is not None and isinstance(root_obj, Morph):
+            root_obj.owner = None
+            target_world.add_morph(root_obj)
+            target_world.changed()
+        return root_obj
 
     def _ensure_core_classes_registered(self) -> None:
         from objectpond.morphic.canvas import Form
