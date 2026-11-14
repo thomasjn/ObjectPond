@@ -21,6 +21,15 @@ class ImageSerializer:
     """
 
     FORMAT_VERSION = "objectpond-image-1.0"
+    MAX_DECOMPRESSED_BYTES = 64 * 1024 * 1024
+
+    @classmethod
+    def _safe_zlib_decompress(cls, data: bytes, wbits: int = zlib.MAX_WBITS) -> bytes:
+        d = zlib.decompressobj(wbits)
+        out = d.decompress(data, cls.MAX_DECOMPRESSED_BYTES + 1)
+        if len(out) > cls.MAX_DECOMPRESSED_BYTES or not d.eof:
+            raise ValueError("Compressed image payload exceeds maximum allowed size")
+        return out
 
     def __init__(self, smalltalk: SystemDictionary):
         self.smalltalk = smalltalk
@@ -199,7 +208,7 @@ class ImageSerializer:
             cls_name = entry["class"]
             if cls_name == "Form" and "form" in entry:
                 finfo = entry["form"]
-                raw = zlib.decompress(base64.b64decode(finfo["data"].encode("ascii")))
+                raw = self._safe_zlib_decompress(base64.b64decode(finfo["data"].encode("ascii")))
                 instances[oid] = Form.from_bytes(finfo["width"], finfo["height"], raw)
             else:
                 cls_obj = self.smalltalk.get_class(cls_name)
@@ -242,6 +251,8 @@ class ImageSerializer:
             inst = instances[oid]
             state = entry.get("state", {})
             for k, v in state.items():
+                if str(k).startswith("__"):
+                    continue
                 if isinstance(v, dict) and "$bound_method" in v:
                     deferred_bound_methods.append((inst, k, v["$bound_method"]))
                 else:
@@ -267,9 +278,11 @@ class ImageSerializer:
         return gzip.compress(json_bytes, compresslevel=6)
 
     def load_image_bytes(self, data: bytes) -> Any:
-        try:
-            json_bytes = gzip.decompress(data)
-        except Exception:
+        if data[:2] == b"\x1f\x8b":
+            json_bytes = self._safe_zlib_decompress(data, wbits=16 + zlib.MAX_WBITS)
+        else:
+            if len(data) > self.MAX_DECOMPRESSED_BYTES:
+                raise ValueError("Image payload exceeds maximum allowed size")
             json_bytes = data
         snap = json.loads(json_bytes.decode("utf-8"))
         return self.restore_from_snapshot_dict(snap)

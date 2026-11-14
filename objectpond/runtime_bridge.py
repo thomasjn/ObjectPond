@@ -284,6 +284,8 @@ class ObjectPondController:
         object_id: Optional[str] = None,
         global_name: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if attr.startswith("__"):
+            raise ValueError(f"Refusing to mutate dunder attribute '{attr}'")
         obj = self._resolve_obj(object_id=object_id, global_name=global_name)
         env = dict(self.world.workspace_globals)
         env["self"] = obj

@@ -1,13 +1,24 @@
 from collections import deque
+import hmac
 import json
 import os
 from pathlib import Path
 import sys
 import threading
 import time
+from urllib.parse import urlparse
 import uuid
+import zlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Deque, Dict, Optional
+
+MAX_POST_BYTES = 32 * 1024 * 1024
+MAX_BRIDGE_QUEUE = 64
+ALLOWED_STATIC_FILES = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    "/index.html": ("index.html", "text/html; charset=utf-8"),
+    "/vm.js": ("vm.js", "application/javascript; charset=utf-8"),
+}
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -118,6 +129,8 @@ class BridgeHub:
             req_id = uuid.uuid4().hex
             evt = threading.Event()
             with self._cond:
+                if len(self._queue) >= MAX_BRIDGE_QUEUE:
+                    raise RuntimeError("Bridge command queue is full")
                 self._pending[req_id] = {"event": evt, "payload": None}
                 self._queue.append({"id": req_id, "method": method, "params": params or {}})
                 self._cond.notify_all()
@@ -172,12 +185,54 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    @staticmethod
+    def _is_allowed_origin(origin: str) -> bool:
+        try:
+            parsed = urlparse(origin)
+            return parsed.scheme in ("http", "https") and parsed.hostname in ("localhost", "127.0.0.1", "::1")
+        except Exception:
+            return False
+
+    def _check_request_security(self, require_auth: bool = False) -> bool:
+        origin = self.headers.get("Origin")
+        if origin and not self._is_allowed_origin(origin):
+            self._send_json(403, {"error": "Cross-origin request rejected"})
+            return False
+        expected_token = getattr(self.server, "auth_token", None)
+        if require_auth and expected_token:
+            auth = self.headers.get("Authorization", "")
+            prefix = "Bearer "
+            provided = auth[len(prefix):] if auth.startswith(prefix) else ""
+            if not hmac.compare_digest(provided, expected_token):
+                self._send_json(401, {"error": "Unauthorized"})
+                return False
+        return True
+
+    def _read_body(self) -> Optional[bytes]:
+        raw_len = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_len)
+        except ValueError:
+            self._send_json(400, {"error": "Invalid Content-Length header"})
+            return None
+        if length < 0:
+            self._send_json(400, {"error": "Negative Content-Length header"})
+            return None
+        if length > MAX_POST_BYTES:
+            self._send_json(413, {"error": f"Payload exceeds {MAX_POST_BYTES} bytes limit"})
+            return None
+        return self.rfile.read(length)
+
     def end_headers(self):
-        # Enable CORS and WASM headers
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Mcp-Session-Id")
-        self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
+        origin = self.headers.get("Origin") if hasattr(self, "headers") else None
+        if origin and self._is_allowed_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Mcp-Session-Id")
+            self.send_header("Access-Control-Expose-Headers", "Mcp-Session-Id")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
         super().end_headers()
 
     def do_OPTIONS(self):
@@ -226,6 +281,8 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_path == "/api/bridge/poll":
+            if not self._check_request_security(require_auth=True):
+                return
             cmd = self._bridge_hub().poll_command(timeout=20.0)
             if cmd is None:
                 self.send_response(204)
@@ -235,6 +292,8 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_path == "/mcp":
+            if not self._check_request_security(require_auth=True):
+                return
             accept = self.headers.get("Accept", "")
             if "text/event-stream" in accept:
                 self.send_response(200)
@@ -252,15 +311,32 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        super().do_GET()
+        if parsed_path in ALLOWED_STATIC_FILES:
+            rel_file, content_type = ALLOWED_STATIC_FILES[parsed_path]
+            file_path = BASE_DIR / rel_file
+            if file_path.is_file():
+                data = file_path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+
+        self.send_response(404)
+        self.end_headers()
 
     def do_POST(self):
         parsed_path = self.path.split("?")[0]
 
         if parsed_path == "/mcp":
+            if not self._check_request_security(require_auth=True):
+                return
+            raw = self._read_body()
+            if raw is None:
+                return
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                raw = self.rfile.read(length)
                 payload = json.loads(raw.decode("utf-8"))
                 resp = self._mcp_server().handle_payload(payload)
                 session_id = self.headers.get("Mcp-Session-Id") or uuid.uuid4().hex
@@ -275,9 +351,13 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_path == "/api/mcp/dispatch":
+            if not self._check_request_security(require_auth=True):
+                return
+            raw = self._read_body()
+            if raw is None:
+                return
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                body = json.loads(raw.decode("utf-8"))
                 result = self._bridge_hub().execute(body["method"], body.get("params") or {})
                 self._send_json(200, {"result": result})
             except Exception as exc:
@@ -285,9 +365,13 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_path == "/api/bridge/result":
+            if not self._check_request_security(require_auth=True):
+                return
+            raw = self._read_body()
+            if raw is None:
+                return
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                body = json.loads(raw.decode("utf-8"))
                 self._bridge_hub().submit_result(body)
                 self._send_json(200, {"status": "ok"})
             except Exception as exc:
@@ -295,38 +379,48 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_path == "/api/image/save":
+            if not self._check_request_security(require_auth=True):
+                return
+            body = self._read_body()
+            if body is None:
+                return
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length)
+                raw_json = (
+                    ImageSerializer._safe_zlib_decompress(body, wbits=16 + zlib.MAX_WBITS)
+                    if body[:2] == b"\x1f\x8b"
+                    else body
+                )
+                snap = json.loads(raw_json.decode("utf-8"))
+                if not isinstance(snap, dict) or "objects" not in snap or "world" not in snap:
+                    raise ValueError("Invalid ObjectPond image snapshot structure")
+            except Exception as exc:
+                self._send_json(400, {"status": "error", "message": f"Invalid image payload: {exc}"})
+                return
+            try:
                 image_path = BASE_DIR / "objectpond.image"
                 with open(image_path, "wb") as fp:
                     fp.write(body)
-                resp = json.dumps({"status": "ok", "bytes_saved": len(body)}).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(resp)))
-                self.end_headers()
-                self.wfile.write(resp)
+                self._send_json(200, {"status": "ok", "bytes_saved": len(body)})
             except Exception as exc:
-                err = json.dumps({"status": "error", "message": str(exc)}).encode("utf-8")
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(err)))
-                self.end_headers()
-                self.wfile.write(err)
+                self._send_json(500, {"status": "error", "message": str(exc)})
             return
 
         self.send_response(404)
         self.end_headers()
 
 
-def run_server(port: int = 8000) -> None:
-    server = ThreadingHTTPServer(("", port), ObjectPondHandler)
+def run_server(
+    port: int = 8000,
+    host: str = "127.0.0.1",
+    auth_token: Optional[str] = None,
+) -> None:
+    server = ThreadingHTTPServer((host, port), ObjectPondHandler)
     server.bridge_hub = BridgeHub(BASE_DIR)  # type: ignore[attr-defined]
     server.mcp_server = ObjectPondMCPServer(server.bridge_hub.execute)  # type: ignore[attr-defined]
+    server.auth_token = auth_token  # type: ignore[attr-defined]
     print(f"==================================================")
-    print(f" ObjectPond Server running at http://localhost:{port}")
-    print(f" MCP HTTP endpoint at http://localhost:{port}/mcp")
+    print(f" ObjectPond Server running at http://{host}:{port}")
+    print(f" MCP HTTP endpoint at http://{host}:{port}/mcp")
     print(f"==================================================")
     try:
         server.serve_forever()
@@ -341,6 +435,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ObjectPond Streaming Image & MCP Server")
     parser.add_argument("positional_port", nargs="?", type=int, default=None, help="Port number")
     parser.add_argument("-p", "--port", type=int, default=8765, help="Port number (default: 8765)")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    parser.add_argument("--auth-token", default=None, help="Optional Bearer token for API/MCP endpoints")
     parser.add_argument("--mcp-stdio", action="store_true", help="Run MCP server over stdio instead of HTTP")
     parser.add_argument("--bridge-url", default="http://localhost:8765", help="Bridge URL for --mcp-stdio")
     parser.add_argument("--headless", action="store_true", help="Force headless mode in --mcp-stdio")
@@ -348,4 +444,8 @@ if __name__ == "__main__":
     if args.mcp_stdio:
         run_stdio_server(bridge_url=args.bridge_url, headless=args.headless)
     else:
-        run_server(args.positional_port if args.positional_port is not None else args.port)
+        run_server(
+            port=args.positional_port if args.positional_port is not None else args.port,
+            host=args.host,
+            auth_token=args.auth_token,
+        )

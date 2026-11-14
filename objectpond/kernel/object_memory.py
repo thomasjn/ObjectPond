@@ -215,14 +215,19 @@ class SystemDictionary:
             func_name = code.co_name
             code_line = linecache.getline(filename, lineno).strip()
             locals_repr: Dict[str, str] = {}
+            sensitive_terms = ("token", "secret", "password", "passwd", "api_key", "environ")
             for k, v in frame.f_locals.items():
+                ks = str(k)
+                if any(term in ks.lower() for term in sensitive_terms):
+                    locals_repr[ks] = "<redacted>"
+                    continue
                 try:
                     r = repr(v)
                     if len(r) > 200:
                         r = r[:197] + "..."
-                    locals_repr[str(k)] = r
+                    locals_repr[ks] = r
                 except Exception:
-                    locals_repr[str(k)] = "<unrepresentable>"
+                    locals_repr[ks] = "<unrepresentable>"
 
             self_obj = frame.f_locals.get("self")
             self_class = self_obj.__class__.__name__ if self_obj is not None else None

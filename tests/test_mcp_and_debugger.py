@@ -4,6 +4,7 @@ import json
 import struct
 import threading
 import unittest
+import urllib.error
 import urllib.request
 
 from objectpond.boot import create_default_environment
@@ -214,6 +215,52 @@ class TestMCPServerHTTPAndBridge(unittest.TestCase):
         })
         t.join(timeout=5.0)
         self.assertIn('"from_browser": true', bridged["result"]["content"][0]["text"])
+
+    def test_security_hardening_static_allowlist_cors_and_image_validation(self):
+        # 1. Internal files outside static allowlist must return 404
+        for blocked in ("/AGENTS.md", "/server.py", "/.gitignore"):
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(f"http://127.0.0.1:{self.port}{blocked}", timeout=5.0)
+            self.assertEqual(ctx.exception.code, 404)
+
+        # 2. Cross-origin POST /mcp must be rejected with 403
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/mcp",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
+            headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(req, timeout=5.0)
+        self.assertEqual(ctx.exception.code, 403)
+
+        # 3. Invalid image payload to /api/image/save must be rejected with 400
+        bad_save = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/image/save",
+            data=b"not-a-valid-image",
+            headers={"Content-Type": "application/octet-stream"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(bad_save, timeout=5.0)
+        self.assertEqual(ctx.exception.code, 400)
+
+    def test_dunder_mutation_blocked_and_sensitive_locals_redacted(self):
+        st, world = create_default_environment(640, 480)
+        ctrl = ObjectPondController(st, world)
+        with self.assertRaises(ValueError):
+            ctrl.dispatch("mutate_object", {"object_id": "world", "attr": "__class__", "value_expr": "dict"})
+
+        def fail_with_secret():
+            api_token = "super-secret-123"
+            _ = api_token
+            raise RuntimeError("boom")
+
+        try:
+            fail_with_secret()
+        except RuntimeError as exc:
+            rec = st.record_exception(exc, context="test")
+            self.assertEqual(rec["frames"][-1]["locals"]["api_token"], "<redacted>")
 
 
 if __name__ == "__main__":
