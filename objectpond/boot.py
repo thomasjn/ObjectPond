@@ -141,7 +141,9 @@ def create_default_environment(
     world.add_morph(transcript)
     world.add_morph(atoms)
 
-    smalltalk.log_transcript("ObjectPond 1.0 booted.")
+    from . import __version__
+
+    smalltalk.log_transcript(f"ObjectPond {__version__} booted.")
     smalltalk.log_transcript("Welcome to ObjectPond — Live Python Morphic Environment!")
     smalltalk.log_transcript("Alt+Click any Morph to open Morphic Halos.")
 

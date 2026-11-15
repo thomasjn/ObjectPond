@@ -153,7 +153,9 @@ class TestMCPControllerAndDebugger(unittest.TestCase):
             "method": "resources/read",
             "params": {"uri": "objectpond://transcript"},
         })
-        self.assertIn("ObjectPond 1.0 booted", res_resp["result"]["contents"][0]["text"])
+        from objectpond import __version__
+
+        self.assertIn(f"ObjectPond {__version__} booted", res_resp["result"]["contents"][0]["text"])
 
 
 class TestMCPServerHTTPAndBridge(unittest.TestCase):

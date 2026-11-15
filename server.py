@@ -316,6 +316,13 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             file_path = BASE_DIR / rel_file
             if file_path.is_file():
                 data = file_path.read_bytes()
+                if rel_file == "index.html":
+                    from objectpond import __version__
+
+                    data = data.replace(
+                        b'id="boot-logo-title">ObjectPond</div>',
+                        f'id="boot-logo-title">ObjectPond {__version__}</div>'.encode("utf-8"),
+                    )
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(data)))

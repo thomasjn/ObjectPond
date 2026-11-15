@@ -337,6 +337,12 @@ with open("/tmp/import_source.image", "rb") as fp:
             const bundleResp = await fetch("/api/source-bundle");
             if (!bundleResp.ok) throw new Error("Failed to fetch /api/source-bundle");
             const bundle = await bundleResp.json();
+            const initSrc = bundle["objectpond/__init__.py"] || "";
+            const verMatch = initSrc.match(/__version__\s*=\s*["']([^"']+)["']/);
+            if (verMatch) {
+                const titleEl = document.getElementById("boot-logo-title");
+                if (titleEl) titleEl.textContent = `ObjectPond ${verMatch[1]}`;
+            }
 
             for (const [filePath, content] of Object.entries(bundle)) {
                 const parts = filePath.split("/");

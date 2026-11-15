@@ -1,3 +1,3 @@
 """ObjectPond: Image-based live Python environment & Morphic runtime."""
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"

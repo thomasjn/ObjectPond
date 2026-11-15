@@ -317,12 +317,16 @@ class TestObjectPondServerEndpoints(unittest.TestCase):
         with urllib.request.urlopen(url_changes) as resp:
             self.assertEqual(resp.status, 200)
 
+        from objectpond import __version__
+
         url_html = f"http://127.0.0.1:{self.port}/index.html"
         with urllib.request.urlopen(url_html) as resp:
             self.assertEqual(resp.status, 200)
             content = resp.read().decode("utf-8")
             self.assertIn("world-canvas", content)
             self.assertIn("vm.js", content)
+            self.assertIn(f"ObjectPond {__version__}", content)
+            self.assertNotIn("ObjectPond 1.0", content)
 
 
 

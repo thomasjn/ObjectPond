@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 
+from . import __version__
+
 MCP_PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "objectpond-mcp", "version": "1.0.0"}
+SERVER_INFO = {"name": "objectpond-mcp", "version": __version__}
 
 OBJECTPOND_GUIDE = """ObjectPond is a live Morphic / Morphic development environment implemented in Python.
 
