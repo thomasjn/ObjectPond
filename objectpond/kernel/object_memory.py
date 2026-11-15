@@ -29,6 +29,22 @@ class ChangesLog:
     def to_list(self) -> List[Dict[str, Any]]:
         return list(self.entries)
 
+    def compact(self) -> int:
+        """Keep only the latest entry per (kind, target) for class/method definitions; returns removed count."""
+        kept_reversed: List[Dict[str, Any]] = []
+        seen_defs = set()
+        for entry in reversed(self.entries):
+            kind = entry.get("kind")
+            if kind in ("class", "method"):
+                key = (kind, entry.get("target"))
+                if key in seen_defs:
+                    continue
+                seen_defs.add(key)
+            kept_reversed.append(entry)
+        removed = len(self.entries) - len(kept_reversed)
+        self.entries = list(reversed(kept_reversed))
+        return removed
+
     @classmethod
     def from_list(cls, data: List[Dict[str, Any]]) -> "ChangesLog":
         return cls(entries=data)

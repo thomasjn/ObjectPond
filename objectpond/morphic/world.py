@@ -194,6 +194,7 @@ class WorldMorph(Morph):
         self.hand = HandMorph()
         self.active_halo: Optional[HaloMorph] = None
         self.active_menu: Optional[Morph] = None
+        self.active_modal: Optional[Morph] = None
         self.workspace_globals: Dict[str, Any] = {}
         self.status_message: str = "Ready — Alt+Click any Morph for Morphic Halos"
         self.stepping_paused: bool = False
@@ -204,17 +205,25 @@ class WorldMorph(Morph):
 
     def bind_smalltalk(self, smalltalk: Optional[Any]) -> None:
         self.smalltalk = smalltalk
+        from .sound import SampledSound, SoundSynth, ADSR
+
         transcript = TranscriptProxy(self)
         self.workspace_globals["World"] = self
         self.workspace_globals["Transcript"] = transcript
         self.workspace_globals["Form"] = Form
         self.workspace_globals["Morph"] = Morph
+        self.workspace_globals["SampledSound"] = SampledSound
+        self.workspace_globals["SoundSynth"] = SoundSynth
+        self.workspace_globals["ADSR"] = ADSR
         if smalltalk is not None:
             self.workspace_globals["Smalltalk"] = smalltalk
             smalltalk.global_namespace["World"] = self
             smalltalk.global_namespace["Transcript"] = transcript
             smalltalk.global_namespace["Form"] = Form
             smalltalk.global_namespace["Morph"] = Morph
+            smalltalk.global_namespace["SampledSound"] = SampledSound
+            smalltalk.global_namespace["SoundSynth"] = SoundSynth
+            smalltalk.global_namespace["ADSR"] = ADSR
             for cls_name, rec in smalltalk.classes.items():
                 self.workspace_globals.setdefault(cls_name, rec.cls_obj)
 
@@ -224,6 +233,18 @@ class WorldMorph(Morph):
     def trigger_host_action(self, action: str, payload: Any = None) -> None:
         if self._host_action_callback is not None:
             self._host_action_callback(action, payload)
+
+    def play_sound(self, sound: Any) -> bool:
+        """Plays a SampledSound via the browser Web Audio host bridge (or no-op headless)."""
+        if sound is None or not hasattr(sound, "to_pcm_b64"):
+            return False
+        payload = {
+            "pcm_b64": sound.to_pcm_b64(),
+            "sample_rate": getattr(sound, "sample_rate", 44100),
+            "channels": getattr(sound, "channels", 1),
+        }
+        self.trigger_host_action("play_sound", payload)
+        return True
 
     def _menubar_items(self) -> List[Tuple[str, str, float, float]]:
         items = [
@@ -262,6 +283,12 @@ class WorldMorph(Morph):
 
         # Draw top menu bar on top of desktop
         self._draw_menubar(canvas)
+
+        # Draw active modal dialog if present
+        modal = getattr(self, "active_modal", None)
+        if modal is not None and modal.visible:
+            canvas.fill_rect(0, 0, self.width, self.height, "rgba(15, 19, 26, 0.55)")
+            modal.full_draw_on(canvas)
 
         # Draw active context menu if present
         if self.active_menu is not None and self.active_menu.visible:
@@ -378,6 +405,17 @@ class WorldMorph(Morph):
                 return
             self.active_menu = None
             self.changed()
+
+        # 2.5. Route clicks exclusively to active modal dialog if open
+        modal = getattr(self, "active_modal", None)
+        if modal is not None and modal.visible:
+            if modal.contains_point(px, py):
+                m_target = modal.morph_at(px, py) or modal
+                self.hand.keyboard_focus = m_target
+                self.hand.pressed_morph = m_target
+                m_target.on_mouse_down(px, py, button)
+            self.changed()
+            return
 
         # 3. Check top menubar click
         if py <= self.MENUBAR_HEIGHT and not alt_key:
@@ -579,6 +617,27 @@ class WorldMorph(Morph):
             self.status_message = "Select a .image file to import an object from..."
             self.trigger_host_action("import_object")
 
+    def open_modal(self, modal: Morph) -> Morph:
+        modal.owner = self
+        nx = max(12.0, (self.width - modal.width) / 2.0)
+        ny = max(self.MENUBAR_HEIGHT + 12.0, (self.height - modal.height) / 2.0)
+        dx = nx - modal.x
+        dy = ny - modal.y
+        if dx != 0.0 or dy != 0.0:
+            modal.move_by(dx, dy)
+        self.active_modal = modal
+        if getattr(modal, "input_field", None) is not None:
+            self.hand.keyboard_focus = modal.input_field
+        else:
+            self.hand.keyboard_focus = modal
+        self.changed()
+        return modal
+
+    def close_modal(self) -> None:
+        self.active_modal = None
+        self.hand.pressed_morph = None
+        self.changed()
+
     def _open_world_menu(self, x: float, y: float) -> None:
         from .widgets import MenuMorph
 
@@ -589,8 +648,11 @@ class WorldMorph(Morph):
             ("Inspect Smalltalk Dictionary", lambda: self.open_inspector(self.smalltalk)),
             ("Open Transcript", lambda: self.open_transcript()),
             ("Open Changes Log Viewer", lambda: self.open_changes()),
+            ("Open App Builder", lambda: self.open_app_builder()),
+            ("Open Sound Studio", lambda: self.open_sound_studio()),
             ("New Bouncing Atoms Morph", lambda: self.spawn_bouncing_atoms()),
             ("New BitBlt Paint Morph", lambda: self.spawn_bitblt_paint()),
+            ("Open Widget Showcase", lambda: self.spawn_widget_showcase()),
             ("Save Live Image (IndexedDB + Server)", lambda: self.trigger_host_action("save_image")),
             ("Download .image File", lambda: self.trigger_host_action("export_image")),
         ]
@@ -682,3 +744,27 @@ class WorldMorph(Morph):
         paint = cls(x=680, y=100, width=280, height=240)
         self.add_morph(paint)
         return paint
+
+    def spawn_widget_showcase(self) -> Optional[Morph]:
+        from objectpond.tools.demos import WidgetShowcaseWindow
+
+        cls = self._resolve_class("WidgetShowcaseWindow", WidgetShowcaseWindow)
+        win = cls(self)
+        self.add_morph(win)
+        return win
+
+    def open_app_builder(self) -> Optional[Morph]:
+        from objectpond.tools.app_builder import AppBuilderWindow
+
+        cls = self._resolve_class("AppBuilderWindow", AppBuilderWindow)
+        win = cls(self)
+        self.add_morph(win)
+        return win
+
+    def open_sound_studio(self) -> Optional[Morph]:
+        from objectpond.tools.demos import SoundStudioWindow
+
+        cls = self._resolve_class("SoundStudioWindow", SoundStudioWindow)
+        win = cls(self)
+        self.add_morph(win)
+        return win

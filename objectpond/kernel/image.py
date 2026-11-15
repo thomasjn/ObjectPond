@@ -87,9 +87,12 @@ class ImageSerializer:
             if isinstance(val, (types.FunctionType, types.BuiltinFunctionType, types.ModuleType, type)):
                 return None
 
-            # Form bitmap object
+            # Form bitmap or SampledSound audio object
             cls_name = val.__class__.__name__
             if cls_name == "Form" and hasattr(val, "width") and hasattr(val, "height") and hasattr(val, "pixels"):
+                oid = register_object(val)
+                return {"$obj": oid}
+            if cls_name == "SampledSound" and hasattr(val, "samples") and hasattr(val, "sample_rate"):
                 oid = register_object(val)
                 return {"$obj": oid}
 
@@ -124,9 +127,28 @@ class ImageSerializer:
                 }
                 return oid
 
+            if cls_name == "SampledSound":
+                raw_bytes = obj.to_bytes()
+                compressed = zlib.compress(raw_bytes)
+                record["sound"] = {
+                    "sample_rate": obj.sample_rate,
+                    "channels": obj.channels,
+                    "data": base64.b64encode(compressed).decode("ascii"),
+                }
+                return oid
+
+            obj_transient = set(transient_attrs)
+            for cls in type(obj).__mro__:
+                cls_t = cls.__dict__.get("_transient_attrs")
+                if cls_t:
+                    obj_transient.update(cls_t)
+            inst_t = obj.__dict__.get("_transient_attrs")
+            if inst_t:
+                obj_transient.update(inst_t)
+
             state = {}
             for k, v in obj.__dict__.items():
-                if k in transient_attrs:
+                if k in obj_transient:
                     continue
                 state[k] = encode_value(v)
             record["state"] = state
@@ -196,6 +218,7 @@ class ImageSerializer:
 
         # 4. Two-pass object graph allocation & hydration
         from objectpond.morphic.canvas import Form
+        from objectpond.morphic.sound import SampledSound
         from objectpond.morphic.morph import Morph
 
         objects_table = snapshot.get("objects", [])
@@ -210,6 +233,12 @@ class ImageSerializer:
                 finfo = entry["form"]
                 raw = self._safe_zlib_decompress(base64.b64decode(finfo["data"].encode("ascii")))
                 instances[oid] = Form.from_bytes(finfo["width"], finfo["height"], raw)
+            elif cls_name == "SampledSound" and "sound" in entry:
+                sinfo = entry["sound"]
+                raw = self._safe_zlib_decompress(base64.b64decode(sinfo["data"].encode("ascii")))
+                instances[oid] = SampledSound.from_bytes(
+                    raw, sample_rate=sinfo.get("sample_rate", 44100), channels=sinfo.get("channels", 1)
+                )
             else:
                 cls_obj = self.smalltalk.get_class(cls_name)
                 if cls_obj is None:
@@ -413,6 +442,7 @@ class ImageSerializer:
                 )
 
         from objectpond.morphic.canvas import Form
+        from objectpond.morphic.sound import SampledSound
         from objectpond.morphic.morph import Morph
 
         instances: Dict[int, Any] = {}
@@ -425,6 +455,12 @@ class ImageSerializer:
                 finfo = entry["form"]
                 raw = self._safe_zlib_decompress(base64.b64decode(finfo["data"].encode("ascii")))
                 instances[oid] = Form.from_bytes(finfo["width"], finfo["height"], raw)
+            elif cls_name == "SampledSound" and "sound" in entry:
+                sinfo = entry["sound"]
+                raw = self._safe_zlib_decompress(base64.b64decode(sinfo["data"].encode("ascii")))
+                instances[oid] = SampledSound.from_bytes(
+                    raw, sample_rate=sinfo.get("sample_rate", 44100), channels=sinfo.get("channels", 1)
+                )
             else:
                 cls_obj = self.smalltalk.get_class(cls_name) or Morph
                 instances[oid] = cls_obj.__new__(cls_obj)
@@ -480,6 +516,7 @@ class ImageSerializer:
 
     def _ensure_core_classes_registered(self) -> None:
         from objectpond.morphic.canvas import Form
+        from objectpond.morphic.sound import SampledSound
         from objectpond.morphic.morph import Morph
         from objectpond.morphic.world import WorldMorph, HaloMorph, HandMorph
         from objectpond.morphic.widgets import (
@@ -510,20 +547,64 @@ class ImageSerializer:
 
         # Register optional tool classes if already imported/available
         try:
+            from objectpond.morphic.app_widgets import (
+                TextInputMorph,
+                CheckboxMorph,
+                ToggleSwitchMorph,
+                SliderMorph,
+                DropdownMorph,
+                ProgressBarMorph,
+                ImageMorph,
+                TableMorph,
+                TreeMorph,
+                DialogMorph,
+            )
+            from objectpond.morphic.containers import (
+                LayoutMorph,
+                RowMorph,
+                ColumnMorph,
+                ScrollPaneMorph,
+                TabViewMorph,
+                SplitPaneMorph,
+            )
+            from objectpond.morphic.sound import SampledSound, SoundSynth, ADSR
             from objectpond.tools.browser import SystemBrowserWindow
             from objectpond.tools.workspace import WorkspaceWindow
             from objectpond.tools.inspector import InspectorWindow
             from objectpond.tools.transcript import TranscriptWindow, ChangesViewerWindow
-            from objectpond.tools.demos import BouncingAtomsMorph, BitBltPaintMorph
+            from objectpond.tools.app_builder import AppBuilderWindow
+            from objectpond.tools.demos import BouncingAtomsMorph, BitBltPaintMorph, WidgetShowcaseWindow, SoundStudioWindow
 
             tool_map = [
+                ("Media-Sound", SampledSound),
+                ("Media-Sound", SoundSynth),
+                ("Media-Sound", ADSR),
+                ("Morphic-Widgets", TextInputMorph),
+                ("Morphic-Widgets", CheckboxMorph),
+                ("Morphic-Widgets", ToggleSwitchMorph),
+                ("Morphic-Widgets", SliderMorph),
+                ("Morphic-Widgets", DropdownMorph),
+                ("Morphic-Widgets", ProgressBarMorph),
+                ("Morphic-Widgets", ImageMorph),
+                ("Morphic-Widgets", TableMorph),
+                ("Morphic-Widgets", TreeMorph),
+                ("Morphic-Widgets", DialogMorph),
+                ("Morphic-Widgets", LayoutMorph),
+                ("Morphic-Widgets", RowMorph),
+                ("Morphic-Widgets", ColumnMorph),
+                ("Morphic-Widgets", ScrollPaneMorph),
+                ("Morphic-Widgets", TabViewMorph),
+                ("Morphic-Widgets", SplitPaneMorph),
                 ("Tools-Browser", SystemBrowserWindow),
                 ("Tools-Workspace", WorkspaceWindow),
                 ("Tools-Inspector", InspectorWindow),
                 ("Tools-Transcript", TranscriptWindow),
                 ("Tools-Transcript", ChangesViewerWindow),
+                ("Tools-AppBuilder", AppBuilderWindow),
                 ("User-Objects", BouncingAtomsMorph),
                 ("User-Objects", BitBltPaintMorph),
+                ("User-Objects", WidgetShowcaseWindow),
+                ("User-Objects", SoundStudioWindow),
             ]
             for cat, cls_obj in tool_map:
                 if cls_obj.__name__ not in self.smalltalk.classes:

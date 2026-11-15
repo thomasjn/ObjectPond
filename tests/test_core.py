@@ -382,6 +382,79 @@ class TestMorphicAndWidgets(unittest.TestCase):
         self.assertEqual(self.world.get_clipboard_text(), "line1\r\nline2")
         self.assertIn("line1\nline2", ed1.text)
 
+    def test_code_editor_autocomplete(self):
+        ed = CodeEditorMorph(10, 40, 360, 200, text="", context={"my_custom_var": 42})
+        self.world.add_morph(ed)
+        self.world.hand.keyboard_focus = ed
+
+        # 1. Identifier prefix completion (2+ chars) and Tab acceptance
+        for ch in "my_cu":
+            ed.on_key_down(ch)
+        self.assertIn("my_custom_var", ed._ac_items)
+        ed.on_key_down("Tab")
+        self.assertEqual(ed.text, "my_custom_var")
+        self.assertEqual(ed._ac_items, [])
+
+        # 2. Dotted attribute completion on live World object
+        ed.set_text("")
+        for ch in "World.open_w":
+            ed.on_key_down(ch)
+        self.assertIn("open_workspace", ed._ac_items)
+        ed.draw_on(self.canvas)
+        ed.on_key_down("Enter")
+        self.assertEqual(ed.text, "World.open_workspace")
+
+        # 3. Ctrl+Space manual trigger & Escape dismissal
+        ed.set_text("")
+        ed.on_key_down(" ", ctrl_key=True)
+        self.assertTrue(len(ed._ac_items) > 0)
+        ed.on_key_down("Escape")
+        self.assertEqual(ed._ac_items, [])
+
+    def test_transient_attrs_and_changes_compact(self):
+        class BaseCachedMorph(Morph):
+            _transient_attrs = ("_base_cache",)
+
+            def __init__(self):
+                super().__init__(0, 0, 50, 50)
+                self._base_cache = "big_base_data"
+                self.label = "keep_me"
+
+        class ChildCachedMorph(BaseCachedMorph):
+            _transient_attrs = ("_child_cache",)
+
+            def __init__(self):
+                super().__init__()
+                self._child_cache = [1, 2, 3]
+                self._inst_cache = "also_transient"
+                self._transient_attrs = ("_inst_cache",)
+
+        from objectpond.kernel.image import ImageSerializer
+
+        self.smalltalk.register_class("User-Objects", BaseCachedMorph)
+        self.smalltalk.register_class("User-Objects", ChildCachedMorph)
+        m = ChildCachedMorph()
+        self.world.add_morph(m)
+        serializer = ImageSerializer(self.smalltalk)
+        raw = serializer.save_image_bytes(self.world)
+        restored_world = serializer.load_image_bytes(raw)
+        restored_m = [x for x in restored_world.submorphs if isinstance(x, ChildCachedMorph)][0]
+        self.assertEqual(restored_m.label, "keep_me")
+        self.assertFalse(hasattr(restored_m, "_base_cache"))
+        self.assertFalse(hasattr(restored_m, "_child_cache"))
+        self.assertFalse(hasattr(restored_m, "_inst_cache"))
+
+        # ChangesLog.compact keeps only latest class/method per target and preserves doit
+        self.smalltalk.changes_log.record("method", "Foo>>bar", "def bar(self): return 1")
+        self.smalltalk.changes_log.record("doit", "Workspace", "1 + 1")
+        self.smalltalk.changes_log.record("method", "Foo>>bar", "def bar(self): return 2")
+        removed = self.smalltalk.changes_log.compact()
+        self.assertGreaterEqual(removed, 1)
+        foo_entries = [e for e in self.smalltalk.changes_log.entries if e.get("target") == "Foo>>bar"]
+        self.assertEqual(len(foo_entries), 1)
+        self.assertIn("return 2", foo_entries[0]["source"])
+        self.assertTrue(any(e.get("kind") == "doit" and e.get("source") == "1 + 1" for e in self.smalltalk.changes_log.entries))
+
 
 if __name__ == "__main__":
     unittest.main()

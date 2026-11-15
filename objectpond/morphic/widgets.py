@@ -1,4 +1,6 @@
 import ast
+import keyword
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from .canvas import DisplayCanvas
 from .morph import Morph
@@ -314,6 +316,9 @@ class CodeEditorMorph(Morph):
         self._scrollbar_drag_offset: float = 0.0
         self._dragging_hscrollbar: bool = False
         self._hscrollbar_drag_offset: float = 0.0
+        self._ac_items: List[str] = []
+        self._ac_index: int = 0
+        self._ac_prefix: str = ""
 
     def _visible_cols(self) -> int:
         return max(
@@ -611,6 +616,18 @@ class CodeEditorMorph(Morph):
 
     def on_mouse_down(self, px: float, py: float, button: int) -> None:
         if button == 0:
+            ac_rect = self._ac_popup_rect()
+            if ac_rect is not None:
+                ax, ay, aw, ah = ac_rect
+                if ax <= px <= ax + aw and ay <= py <= ay + ah:
+                    row = int((py - (ay + 2.0)) // 18.0)
+                    items = getattr(self, "_ac_items", [])
+                    if 0 <= row < len(items):
+                        self._ac_index = row
+                        self.accept_autocomplete()
+                        return
+                self.dismiss_autocomplete()
+
             sb = self._scrollbar_geometry()
             if sb is not None and px >= sb[0] and py <= sb[1] + sb[3]:
                 _tx, ty, _tw, th, thumb_y, thumb_h = sb
@@ -724,6 +741,128 @@ class CodeEditorMorph(Morph):
         self.cursor_idx = new_idx
         self.ensure_cursor_visible()
 
+    def _ac_env(self) -> Dict[str, Any]:
+        env: Dict[str, Any] = {}
+        w = self.world()
+        if w is not None:
+            env.update(getattr(w, "workspace_globals", {}))
+            if getattr(w, "smalltalk", None) is not None:
+                for cname, rec in w.smalltalk.classes.items():
+                    env.setdefault(cname, rec.cls_obj)
+        env.update(self.context)
+        return env
+
+    def _ac_context_token(self) -> Tuple[Optional[str], str]:
+        """Returns (dotted_expr_or_None, prefix_being_typed) at the current cursor."""
+        before = self.text[: self.cursor_idx]
+        line_start = before.rfind("\n") + 1
+        line_before = before[line_start:]
+        m_dot = re.search(r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z0-9_]*)$", line_before)
+        if m_dot:
+            return (m_dot.group(1), m_dot.group(2))
+        m_id = re.search(r"([A-Za-z_][A-Za-z0-9_]*)$", line_before)
+        if m_id:
+            return (None, m_id.group(1))
+        return (None, "")
+
+    def _compute_completions(self, obj_expr: Optional[str], prefix: str, force: bool = False) -> List[str]:
+        candidates: List[str] = []
+        env = self._ac_env()
+        if obj_expr is not None:
+            parts = obj_expr.split(".")
+            obj = env.get(parts[0])
+            if obj is not None:
+                for attr in parts[1:]:
+                    obj = getattr(obj, attr, None)
+                    if obj is None:
+                        break
+            if obj is not None:
+                show_private = prefix.startswith("_")
+                for name in dir(obj):
+                    if show_private or not name.startswith("_"):
+                        candidates.append(name)
+        else:
+            if not force and len(prefix) < 2:
+                return []
+            seen = set()
+            for pool in (
+                list(env.keys()),
+                re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", self.text),
+                list(keyword.kwlist),
+                ["len", "range", "print", "isinstance", "getattr", "setattr", "str", "int", "float", "list", "dict", "set", "tuple", "True", "False", "None"],
+            ):
+                for item in pool:
+                    if item not in seen:
+                        seen.add(item)
+                        candidates.append(item)
+
+        if not prefix:
+            return sorted(set(candidates))[:30]
+
+        low = prefix.lower()
+        exact = [c for c in candidates if c.startswith(prefix) and c != prefix]
+        ci = [c for c in candidates if not c.startswith(prefix) and c.lower().startswith(low) and c != prefix]
+        return (sorted(set(exact)) + sorted(set(ci)))[:30]
+
+    def update_autocomplete(self, force: bool = False) -> None:
+        obj_expr, prefix = self._ac_context_token()
+        if obj_expr is None and not force and len(prefix) < 2:
+            self.dismiss_autocomplete()
+            return
+        items = self._compute_completions(obj_expr, prefix, force=force)
+        if not items:
+            self.dismiss_autocomplete()
+            return
+        self._ac_items = items
+        self._ac_prefix = prefix
+        self._ac_index = 0
+        self.changed()
+
+    def dismiss_autocomplete(self) -> None:
+        if getattr(self, "_ac_items", None):
+            self._ac_items = []
+            self._ac_index = 0
+            self._ac_prefix = ""
+            self.changed()
+
+    def accept_autocomplete(self) -> bool:
+        items = getattr(self, "_ac_items", [])
+        idx = getattr(self, "_ac_index", 0)
+        if not items or not (0 <= idx < len(items)):
+            return False
+        choice = items[idx]
+        prefix = getattr(self, "_ac_prefix", "")
+        if prefix:
+            start = max(0, self.cursor_idx - len(prefix))
+            self.text = self.text[:start] + choice + self.text[self.cursor_idx :]
+            self.cursor_idx = start + len(choice)
+            self.is_dirty = True
+            self.ensure_cursor_visible()
+        else:
+            self.insert_text(choice)
+        self._ac_items = []
+        self._ac_index = 0
+        self._ac_prefix = ""
+        self.changed()
+        return True
+
+    def _ac_popup_rect(self) -> Optional[Tuple[float, float, float, float]]:
+        items = getattr(self, "_ac_items", [])
+        if not items:
+            return None
+        row, col = self._index_to_row_col(self.cursor_idx)
+        vis_rows = min(7, len(items))
+        pw = min(220.0, max(130.0, max(len(s) for s in items[:vis_rows]) * 7.8 + 20.0))
+        ph = vis_rows * 18.0 + 4.0
+        cx = self.x + self.GUTTER_WIDTH + 6.0 + max(0, col - getattr(self, "scroll_col", 0)) * self.CHAR_WIDTH
+        cy = self.y + 4.0 + (row - self.scroll_line + 1) * self.LINE_HEIGHT
+        px = max(self.x + 2.0, min(self.x + self.width - pw - 4.0, cx))
+        if cy + ph > self.y + self.height - 2.0:
+            cy_above = self.y + 4.0 + (row - self.scroll_line) * self.LINE_HEIGHT - ph
+            if cy_above >= self.y + 2.0:
+                cy = cy_above
+        return (px, cy, pw, ph)
+
     def on_key_down(
         self,
         key: str,
@@ -733,6 +872,26 @@ class CodeEditorMorph(Morph):
         alt_key: bool = False,
     ) -> None:
         cmd = ctrl_key or meta_key
+        if ctrl_key and key == " ":
+            self.update_autocomplete(force=True)
+            return
+
+        if getattr(self, "_ac_items", []):
+            if key == "Escape":
+                self.dismiss_autocomplete()
+                return
+            if key == "ArrowDown":
+                self._ac_index = (self._ac_index + 1) % len(self._ac_items)
+                self.changed()
+                return
+            if key == "ArrowUp":
+                self._ac_index = (self._ac_index - 1) % len(self._ac_items)
+                self.changed()
+                return
+            if key in ("Tab", "Enter"):
+                self.accept_autocomplete()
+                return
+
         if cmd:
             k_lower = key.lower()
             if k_lower == "d":
@@ -788,6 +947,7 @@ class CodeEditorMorph(Morph):
                 self.cursor_idx -= 1
                 self.is_dirty = True
                 self.ensure_cursor_visible()
+            self.update_autocomplete(force=False)
         elif key == "Delete":
             if self.has_selection():
                 self.insert_text("")
@@ -795,6 +955,7 @@ class CodeEditorMorph(Morph):
                 self.text = self.text[: self.cursor_idx] + self.text[self.cursor_idx + 1 :]
                 self.is_dirty = True
                 self.ensure_cursor_visible()
+            self.dismiss_autocomplete()
         elif key == "Enter":
             row, _col = self._index_to_row_col(self.cursor_idx)
             lines = self.text.split("\n")
@@ -806,35 +967,47 @@ class CodeEditorMorph(Morph):
         elif key == "Tab":
             self.insert_text("    ")
         elif key == "ArrowLeft":
+            self.dismiss_autocomplete()
             self._move_cursor(self.cursor_idx - 1, extend_selection=shift_key)
         elif key == "ArrowRight":
+            self.dismiss_autocomplete()
             self._move_cursor(self.cursor_idx + 1, extend_selection=shift_key)
         elif key == "ArrowUp":
+            self.dismiss_autocomplete()
             row, col = self._index_to_row_col(self.cursor_idx)
             self._move_cursor(self._row_col_to_index(max(0, row - 1), col), extend_selection=shift_key)
         elif key == "ArrowDown":
+            self.dismiss_autocomplete()
             row, col = self._index_to_row_col(self.cursor_idx)
             self._move_cursor(self._row_col_to_index(row + 1, col), extend_selection=shift_key)
         elif key == "PageUp":
+            self.dismiss_autocomplete()
             row, col = self._index_to_row_col(self.cursor_idx)
             vis = self._visible_lines()
             self.scroll_line = max(0, self.scroll_line - vis)
             self._move_cursor(self._row_col_to_index(max(0, row - vis), col), extend_selection=shift_key)
         elif key == "PageDown":
+            self.dismiss_autocomplete()
             row, col = self._index_to_row_col(self.cursor_idx)
             vis = self._visible_lines()
             self.scroll_line = min(self._max_scroll_line(), self.scroll_line + vis)
             self._move_cursor(self._row_col_to_index(row + vis, col), extend_selection=shift_key)
         elif key == "Home":
+            self.dismiss_autocomplete()
             row, _col = self._index_to_row_col(self.cursor_idx)
             self._move_cursor(self._row_col_to_index(row, 0), extend_selection=shift_key)
         elif key == "End":
+            self.dismiss_autocomplete()
             row, _col = self._index_to_row_col(self.cursor_idx)
             lines = self.text.split("\n")
             line_len = len(lines[row]) if 0 <= row < len(lines) else 0
             self._move_cursor(self._row_col_to_index(row, line_len), extend_selection=shift_key)
         elif len(key) == 1 and not cmd:
             self.insert_text(key)
+            if key == "." or key.isalnum() or key == "_":
+                self.update_autocomplete(force=(key == "."))
+            else:
+                self.dismiss_autocomplete()
         self.changed()
 
     def draw_on(self, canvas: DisplayCanvas) -> None:
@@ -967,6 +1140,25 @@ class CodeEditorMorph(Morph):
                     else self.x + self.width - 10
                 )
                 canvas.fill_rect(dirty_x, self.y + 2, 8, 8, "#ebcb8b")
+
+            # Autocomplete popup overlay
+            ac_rect = self._ac_popup_rect()
+            if ac_rect is not None:
+                ax, ay, aw, ah = ac_rect
+                items = self._ac_items[:7]
+                canvas.fill_round_rect(ax, ay, aw, ah, 4.0, "#1e222a", "#88c0d0", 1.2)
+                for i, item in enumerate(items):
+                    ry = ay + 2.0 + i * 18.0
+                    is_sel = i == self._ac_index
+                    if is_sel:
+                        canvas.fill_rect(ax + 2.0, ry, aw - 4.0, 17.0, "#5e81ac")
+                    canvas.draw_text(
+                        item,
+                        ax + 8.0,
+                        ry + 13.0,
+                        color="#ffffff" if is_sel else "#eceff4",
+                        font="12px monospace",
+                    )
         finally:
             canvas.pop_clip()
 

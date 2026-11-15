@@ -253,6 +253,45 @@ with open("/tmp/loaded.image", "rb") as fp:
             } catch (exc) {
                 console.error("Export image failed:", exc);
             }
+        } else if (action === "play_sound" && payload) {
+            try {
+                const p = typeof payload.toJs === "function"
+                    ? Object.fromEntries(payload.toJs())
+                    : payload;
+                const pcmB64 = p.pcm_b64 || "";
+                const sampleRate = Number(p.sample_rate || 44100);
+                const channels = Number(p.channels || 1);
+                if (!pcmB64) return;
+                if (!window._objectPondAudioCtx) {
+                    const Ctx = window.AudioContext || window.webkitAudioContext;
+                    window._objectPondAudioCtx = new Ctx();
+                }
+                const audioCtx = window._objectPondAudioCtx;
+                if (audioCtx.state === "suspended") {
+                    audioCtx.resume();
+                }
+                const binStr = atob(pcmB64);
+                const bytes = new Uint8Array(binStr.length);
+                for (let i = 0; i < binStr.length; i++) {
+                    bytes[i] = binStr.charCodeAt(i);
+                }
+                const int16 = new Int16Array(bytes.buffer);
+                const frameCount = Math.floor(int16.length / channels);
+                if (frameCount <= 0) return;
+                const audioBuf = audioCtx.createBuffer(channels, frameCount, sampleRate);
+                for (let ch = 0; ch < channels; ch++) {
+                    const chData = audioBuf.getChannelData(ch);
+                    for (let i = 0; i < frameCount; i++) {
+                        chData[i] = int16[i * channels + ch] / 32768.0;
+                    }
+                }
+                const src = audioCtx.createBufferSource();
+                src.buffer = audioBuf;
+                src.connect(audioCtx.destination);
+                src.start();
+            } catch (exc) {
+                console.error("Audio playback failed:", exc);
+            }
         } else if (action === "load_image" || action === "import_object") {
             const input = document.createElement("input");
             input.type = "file";

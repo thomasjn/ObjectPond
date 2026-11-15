@@ -1,6 +1,7 @@
 from typing import Tuple
 from objectpond.kernel.object_memory import SystemDictionary, ChangesLog
 from objectpond.morphic.canvas import Form
+from objectpond.morphic.sound import SampledSound, SoundSynth, ADSR
 from objectpond.morphic.morph import Morph
 from objectpond.morphic.world import WorldMorph, HandMorph, HaloMorph
 from objectpond.morphic.widgets import (
@@ -11,13 +12,34 @@ from objectpond.morphic.widgets import (
     MenuMorph,
     LabelMorph,
 )
+from objectpond.morphic.app_widgets import (
+    TextInputMorph,
+    CheckboxMorph,
+    ToggleSwitchMorph,
+    SliderMorph,
+    DropdownMorph,
+    ProgressBarMorph,
+    ImageMorph,
+    TableMorph,
+    TreeMorph,
+    DialogMorph,
+)
+from objectpond.morphic.containers import (
+    LayoutMorph,
+    RowMorph,
+    ColumnMorph,
+    ScrollPaneMorph,
+    TabViewMorph,
+    SplitPaneMorph,
+)
 from objectpond.tools.browser import SystemBrowserWindow
 from objectpond.tools.workspace import WorkspaceWindow
 from objectpond.tools.inspector import InspectorWindow
 from objectpond.tools.transcript import TranscriptWindow, ChangesViewerWindow
 from objectpond.tools.debugger import DebuggerWindow
 from objectpond.tools.importer import ImageObjectImporterWindow
-from objectpond.tools.demos import BouncingAtomsMorph, BitBltPaintMorph
+from objectpond.tools.app_builder import AppBuilderWindow
+from objectpond.tools.demos import BouncingAtomsMorph, BitBltPaintMorph, WidgetShowcaseWindow, SoundStudioWindow
 
 
 def create_default_environment(
@@ -35,6 +57,9 @@ def create_default_environment(
 
     # Register all system classes in appropriate categories
     class_registry = [
+        ("Media-Sound", SampledSound),
+        ("Media-Sound", SoundSynth),
+        ("Media-Sound", ADSR),
         ("Morphic-Core", Form),
         ("Morphic-Core", Morph),
         ("Morphic-Core", WorldMorph),
@@ -46,6 +71,22 @@ def create_default_environment(
         ("Morphic-Widgets", CodeEditorMorph),
         ("Morphic-Widgets", MenuMorph),
         ("Morphic-Widgets", LabelMorph),
+        ("Morphic-Widgets", TextInputMorph),
+        ("Morphic-Widgets", CheckboxMorph),
+        ("Morphic-Widgets", ToggleSwitchMorph),
+        ("Morphic-Widgets", SliderMorph),
+        ("Morphic-Widgets", DropdownMorph),
+        ("Morphic-Widgets", ProgressBarMorph),
+        ("Morphic-Widgets", ImageMorph),
+        ("Morphic-Widgets", TableMorph),
+        ("Morphic-Widgets", TreeMorph),
+        ("Morphic-Widgets", DialogMorph),
+        ("Morphic-Widgets", LayoutMorph),
+        ("Morphic-Widgets", RowMorph),
+        ("Morphic-Widgets", ColumnMorph),
+        ("Morphic-Widgets", ScrollPaneMorph),
+        ("Morphic-Widgets", TabViewMorph),
+        ("Morphic-Widgets", SplitPaneMorph),
         ("Tools-Browser", SystemBrowserWindow),
         ("Tools-Workspace", WorkspaceWindow),
         ("Tools-Inspector", InspectorWindow),
@@ -53,8 +94,11 @@ def create_default_environment(
         ("Tools-Transcript", ChangesViewerWindow),
         ("Tools-Debugger", DebuggerWindow),
         ("Tools-Importer", ImageObjectImporterWindow),
+        ("Tools-AppBuilder", AppBuilderWindow),
         ("User-Objects", BouncingAtomsMorph),
         ("User-Objects", BitBltPaintMorph),
+        ("User-Objects", WidgetShowcaseWindow),
+        ("User-Objects", SoundStudioWindow),
     ]
     for category, cls_obj in class_registry:
         smalltalk.register_class(category, cls_obj)
