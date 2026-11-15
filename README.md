@@ -29,6 +29,10 @@ Connect an MCP client over stdio (attaches to a running `server.py` or runs head
 python3 -m objectpond.mcp_server --bridge-url http://localhost:8765
 ```
 
+## Demo Image
+
+A pre-built snapshot, [`objectpond_v1_demo.image`](objectpond_v1_demo.image), is included in the repository. It contains live user-defined morphs (such as `PipeOrganMorph`, `ClockMorph`, `SmileyMorph`, `MiniDragonMorph`, and `MyCustomApp`) alongside the built-in IDE tools. Click **Load .image** in the top toolbar and select `objectpond_v1_demo.image` to boot directly into the demo desktop.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
