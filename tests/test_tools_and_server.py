@@ -226,7 +226,7 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         # 2. Hot-update Morph & SystemBrowserWindow and verify submorphs are never duplicated
         morph_src = self.smalltalk.get_class_definition_source("Morph")
         self.smalltalk.define_class("Morphic-Core", morph_src)
-        self.assertEqual(len(browser.submorphs), 9)
+        self.assertEqual(len(browser.submorphs), 11)
         self.assertIs(self.world.morph_at(enlarged_x, enlarged_y), browser.editor)
 
         # 3. Alt+Click inside a background window and resize via Halo 'resize' handle
@@ -246,6 +246,35 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         self.assertEqual(ws.width, 700.0)
         self.assertEqual(ws.height, 520.0)
         self.assertIs(self.world.morph_at(ws.x + 620, ws.y + 460), ws.editor)
+
+    def test_system_browser_instantiate_and_delete_class_with_confirmation(self):
+        browser = [m for m in self.world.submorphs if m.__class__.__name__ == "SystemBrowserWindow"][0]
+        self.smalltalk.define_class(
+            "User-Objects",
+            "class TempBoxMorph(Morph):\n    def __init__(self, x=120, y=120):\n        super().__init__(x, y, 60, 60)\n",
+        )
+        browser.refresh_categories()
+        browser.select_category("User-Objects")
+        browser.select_class("TempBoxMorph")
+
+        # 1. Click "+ Instance" to spawn an instance into World
+        inst = browser.on_instantiate_clicked()
+        self.assertIsNotNone(inst)
+        self.assertIn(inst, self.world.submorphs)
+
+        # 2. Click big red "Delete Class" -> opens "Are you sure?" modal DialogMorph
+        self.assertEqual(browser.delete_class_btn.color, "#b02a37")
+        browser.on_delete_class_clicked()
+        modal = self.world.active_modal
+        self.assertIsNotNone(modal)
+        self.assertIn("Are you sure?", modal.message)
+
+        # 3. Click "Delete" button on the confirmation dialog
+        delete_btn = [m for m in modal.submorphs if getattr(m, "label", "") == "Delete"][0]
+        delete_btn.on_click()
+        self.assertIsNone(self.world.active_modal)
+        self.assertIsNone(self.smalltalk.get_class("TempBoxMorph"))
+        self.assertNotIn(inst, self.world.submorphs)
 
 
 class TestObjectPondServerEndpoints(unittest.TestCase):

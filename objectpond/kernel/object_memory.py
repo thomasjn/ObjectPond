@@ -352,6 +352,48 @@ class SystemDictionary:
     def get_class_record(self, class_name: str) -> Optional[ClassRecord]:
         return self.classes.get(class_name)
 
+    def delete_class(self, class_name: str, world: Optional[Any] = None) -> int:
+        """Delete a class from SystemDictionary and remove any running instances from world."""
+        if class_name in ("Morph", "WorldMorph", "HandMorph", "HaloMorph", "SystemWindowMorph"):
+            raise ValueError(f"Cannot delete core kernel class '{class_name}'")
+        rec = self.classes.get(class_name)
+        if rec is None:
+            raise KeyError(f"Class '{class_name}' not found")
+        cls_obj = rec.cls_obj
+
+        removed_instances = 0
+        if world is not None:
+            def _prune(parent: Any) -> None:
+                nonlocal removed_instances
+                for sub in list(getattr(parent, "submorphs", [])):
+                    _prune(sub)
+                    if isinstance(sub, cls_obj):
+                        sub.delete()
+                        removed_instances += 1
+            _prune(world)
+            if getattr(world, "active_halo", None) is not None and isinstance(world.active_halo.target, cls_obj):
+                world.active_halo = None
+            if hasattr(world, "connections"):
+                world.connections = [
+                    c for c in world.connections
+                    if not isinstance(c.source, cls_obj) and not isinstance(c.target, cls_obj)
+                ]
+            for gk in [k for k, v in list(getattr(world, "workspace_globals", {}).items()) if isinstance(v, cls_obj) or v is cls_obj]:
+                del world.workspace_globals[gk]
+
+        del self.classes[class_name]
+        cat_list = self.categories.get(rec.category)
+        if cat_list and class_name in cat_list:
+            cat_list.remove(class_name)
+            if not cat_list:
+                del self.categories[rec.category]
+        if self.global_namespace.get(class_name) is cls_obj:
+            del self.global_namespace[class_name]
+
+        self.changes_log.record("delete_class", class_name, f"# Deleted class {class_name}")
+        self.log_transcript(f"Deleted class {class_name} ({removed_instances} running instances removed)")
+        return removed_instances
+
     def get_protocols(self, class_name: str) -> List[str]:
         rec = self.classes.get(class_name)
         if not rec:

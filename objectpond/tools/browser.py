@@ -70,34 +70,52 @@ class SystemBrowserWindow(SystemWindowMorph):
             "Accept (Cmd+S)",
             x=x + 4,
             y=y + 164,
-            width=130,
+            width=112,
             height=24,
             on_click=self.on_accept_clicked,
             color="#2d4f3e",
         )
         self.new_class_btn = ButtonMorph(
             "+ New Class",
-            x=x + 140,
+            x=x + 121,
             y=y + 164,
-            width=100,
+            width=88,
             height=24,
             on_click=self.on_new_class_clicked,
         )
         self.new_method_btn = ButtonMorph(
             "+ New Method",
-            x=x + 246,
+            x=x + 214,
             y=y + 164,
-            width=110,
+            width=96,
             height=24,
             on_click=self.on_new_method_clicked,
         )
         self.inspect_class_btn = ButtonMorph(
             "Inspect Class",
-            x=x + 362,
+            x=x + 315,
             y=y + 164,
-            width=115,
+            width=94,
             height=24,
             on_click=self.on_inspect_class_clicked,
+        )
+        self.instantiate_btn = ButtonMorph(
+            "+ Instance",
+            x=x + 414,
+            y=y + 164,
+            width=90,
+            height=24,
+            on_click=self.on_instantiate_clicked,
+            color="#3b5e7a",
+        )
+        self.delete_class_btn = ButtonMorph(
+            "Delete Class",
+            x=x + 509,
+            y=y + 164,
+            width=94,
+            height=24,
+            on_click=self.on_delete_class_clicked,
+            color="#b02a37",
         )
 
         # Bottom Code Editor
@@ -120,6 +138,8 @@ class SystemBrowserWindow(SystemWindowMorph):
         self.add_morph(self.new_class_btn)
         self.add_morph(self.new_method_btn)
         self.add_morph(self.inspect_class_btn)
+        self.add_morph(self.instantiate_btn)
+        self.add_morph(self.delete_class_btn)
         self.add_morph(self.editor)
 
         # Layout and populate data
@@ -219,6 +239,82 @@ class SystemBrowserWindow(SystemWindowMorph):
                 w = self.world()
                 if w is not None:
                     w.open_inspector(cls_obj)
+
+    def on_instantiate_clicked(self) -> Optional[Any]:
+        if not (self.selected_class_name and self.smalltalk):
+            return None
+        cls_name = self.selected_class_name
+        cls_obj = self.smalltalk.get_class(cls_name)
+        w = self.world()
+        if cls_obj is None or w is None:
+            return None
+        try:
+            try:
+                inst = cls_obj()
+            except TypeError:
+                inst = cls_obj(w)
+            from objectpond.morphic.morph import Morph
+
+            if isinstance(inst, Morph):
+                if inst.x == 0 and inst.y == 0:
+                    inst.set_position(min(w.width - inst.width - 20.0, self.x + self.width + 20.0), max(40.0, self.y))
+                w.add_morph(inst)
+                w.status_message = f"Spawned {cls_name} instance"
+            else:
+                w.open_inspector(inst)
+                w.status_message = f"Instantiated {cls_name}"
+            w.changed()
+            return inst
+        except Exception as exc:
+            w.status_message = f"Instantiate error: {exc}"
+            self.smalltalk.log_transcript(f"Instantiate Error ({cls_name}): {exc}")
+            return None
+
+    def on_delete_class_clicked(self) -> None:
+        if not (self.selected_class_name and self.smalltalk):
+            return
+        cls_name = self.selected_class_name
+        w = self.world()
+        if w is None:
+            return
+        if cls_name in ("Morph", "WorldMorph", "HandMorph", "HaloMorph", "SystemWindowMorph"):
+            w.status_message = f"Cannot delete core kernel class '{cls_name}'"
+            return
+        from objectpond.morphic.app_widgets import DialogMorph
+
+        dlg = DialogMorph(
+            title=f"Delete {cls_name}?",
+            message=f"Delete class '{cls_name}' and all running instances? Are you sure?",
+            buttons=[
+                ("Delete", lambda: self._confirm_delete_class(cls_name)),
+                ("Cancel", None),
+            ],
+            width=400,
+            height=155,
+        )
+        w.open_modal(dlg)
+
+    def _confirm_delete_class(self, cls_name: str) -> None:
+        w = self.world()
+        if not self.smalltalk:
+            return
+        try:
+            removed = self.smalltalk.delete_class(cls_name, world=w)
+            self.selected_class_name = None
+            self.selected_method_name = None
+            self.refresh_categories()
+            if self.selected_category in self.category_list.items:
+                self.select_category(self.selected_category)
+            elif self.category_list.items:
+                self.select_category(self.category_list.items[0])
+            else:
+                self.select_category(None)
+            if w is not None:
+                w.status_message = f"Deleted {cls_name} ({removed} instances removed)"
+                w.changed()
+        except Exception as exc:
+            if w is not None:
+                w.status_message = f"Delete failed: {exc}"
 
     def select_category(self, cat: Optional[str]) -> None:
         self.selected_category = cat
@@ -388,9 +484,16 @@ class SystemBrowserWindow(SystemWindowMorph):
         btn_y = content_y + top_h + 4.0
         btn_h = 24.0
         bx = content_x
-        for btn in [self.accept_btn, self.new_class_btn, self.new_method_btn, self.inspect_class_btn]:
+        for btn in [
+            self.accept_btn,
+            self.new_class_btn,
+            self.new_method_btn,
+            self.inspect_class_btn,
+            self.instantiate_btn,
+            self.delete_class_btn,
+        ]:
             btn.set_position(bx, btn_y)
-            bx += btn.width + 6.0
+            bx += btn.width + 5.0
 
         editor_y = btn_y + btn_h + 4.0
         editor_h = max(40.0, self.y + self.height - editor_y - 4.0)
