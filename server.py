@@ -1,18 +1,21 @@
 from collections import deque
 import hmac
 import json
+import mimetypes
 import os
 from pathlib import Path
 import sys
 import threading
 import time
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+import urllib.request
 import uuid
 import zlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Deque, Dict, Optional
 
 MAX_POST_BYTES = 32 * 1024 * 1024
+MAX_REF_FETCH_BYTES = 16 * 1024 * 1024
 MAX_BRIDGE_QUEUE = 64
 ALLOWED_STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -274,6 +277,69 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             data = content.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        if parsed_path == "/api/fs/read":
+            query = parse_qs(urlparse(self.path).query)
+            anchor = (query.get("anchor") or ["assets"])[0]
+            rel_path = (query.get("path") or [""])[0].lstrip("/")
+            anchors = {
+                "assets": (BASE_DIR / "assets").resolve(),
+                "image_dir": BASE_DIR.resolve(),
+                "workspace": BASE_DIR.resolve(),
+            }
+            root = anchors.get(anchor)
+            if root is None or not rel_path:
+                self._send_json(400, {"error": "Invalid anchor or path"})
+                return
+            try:
+                target = (root / rel_path).resolve()
+                if not target.is_relative_to(root) or any(part.startswith(".") for part in target.relative_to(root).parts):
+                    self._send_json(403, {"error": "Access denied"})
+                    return
+                if not target.is_file():
+                    self._send_json(404, {"error": "File not found"})
+                    return
+                if target.stat().st_size > MAX_REF_FETCH_BYTES:
+                    self._send_json(413, {"error": "File exceeds 16 MB limit"})
+                    return
+                data = target.read_bytes()
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
+                return
+            ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
+        if parsed_path == "/api/url/fetch":
+            query = parse_qs(urlparse(self.path).query)
+            target_url = (query.get("url") or [""])[0]
+            parsed_url = urlparse(target_url)
+            if parsed_url.scheme not in ("http", "https") or not parsed_url.netloc:
+                self._send_json(400, {"error": "Only http/https URLs are supported"})
+                return
+            try:
+                req = urllib.request.Request(target_url, headers={"User-Agent": "ObjectPond/1.1"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = resp.read(MAX_REF_FETCH_BYTES + 1)
+                    if len(data) > MAX_REF_FETCH_BYTES:
+                        self._send_json(413, {"error": "Remote payload exceeds 16 MB limit"})
+                        return
+                    ctype = resp.headers.get("Content-Type") or "application/octet-stream"
+            except Exception as exc:
+                self._send_json(502, {"error": str(exc)})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()

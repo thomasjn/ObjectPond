@@ -200,12 +200,21 @@ class WorldMorph(Morph):
         self.stepping_paused: bool = False
         self.clipboard_text: str = ""
         self._clipboard_seq: int = 0
+        self.connections: List[Any] = []
+        self._connecting_source: Optional[Morph] = None
+        self._connecting_pos: Tuple[float, float] = (0.0, 0.0)
         self._host_action_callback: Optional[Callable[[str, Any], None]] = None
         self.bind_smalltalk(smalltalk)
+
+    _transient_attrs = ("_connecting_source", "_connecting_pos")
 
     def bind_smalltalk(self, smalltalk: Optional[Any]) -> None:
         self.smalltalk = smalltalk
         from .sound import SampledSound, SoundSynth, ADSR
+        from ..kernel.references import FileReference, UrlReference
+        from .connectors import FileMorph, UrlMorph, ConnectionArrowMorph
+        from .hex_editor import HexEditorMorph
+        from .midi_player import MidiPlayerMorph
 
         transcript = TranscriptProxy(self)
         self.workspace_globals["World"] = self
@@ -215,6 +224,13 @@ class WorldMorph(Morph):
         self.workspace_globals["SampledSound"] = SampledSound
         self.workspace_globals["SoundSynth"] = SoundSynth
         self.workspace_globals["ADSR"] = ADSR
+        self.workspace_globals["FileReference"] = FileReference
+        self.workspace_globals["UrlReference"] = UrlReference
+        self.workspace_globals["FileMorph"] = FileMorph
+        self.workspace_globals["UrlMorph"] = UrlMorph
+        self.workspace_globals["ConnectionArrowMorph"] = ConnectionArrowMorph
+        self.workspace_globals["HexEditorMorph"] = HexEditorMorph
+        self.workspace_globals["MidiPlayerMorph"] = MidiPlayerMorph
         if smalltalk is not None:
             self.workspace_globals["Smalltalk"] = smalltalk
             smalltalk.global_namespace["World"] = self
@@ -223,6 +239,14 @@ class WorldMorph(Morph):
             smalltalk.global_namespace["Morph"] = Morph
             smalltalk.global_namespace["SampledSound"] = SampledSound
             smalltalk.global_namespace["SoundSynth"] = SoundSynth
+            smalltalk.global_namespace["ADSR"] = ADSR
+            smalltalk.global_namespace["FileReference"] = FileReference
+            smalltalk.global_namespace["UrlReference"] = UrlReference
+            smalltalk.global_namespace["FileMorph"] = FileMorph
+            smalltalk.global_namespace["UrlMorph"] = UrlMorph
+            smalltalk.global_namespace["ConnectionArrowMorph"] = ConnectionArrowMorph
+            smalltalk.global_namespace["HexEditorMorph"] = HexEditorMorph
+            smalltalk.global_namespace["MidiPlayerMorph"] = MidiPlayerMorph
             smalltalk.global_namespace["ADSR"] = ADSR
             for cls_name, rec in smalltalk.classes.items():
                 self.workspace_globals.setdefault(cls_name, rec.cls_obj)
@@ -275,11 +299,74 @@ class WorldMorph(Morph):
             for gy in range(int(self.MENUBAR_HEIGHT) + grid_step, int(self.height), grid_step):
                 canvas.fill_rect(gx, gy, 1.5, 1.5, "#2e3440")
 
+    def begin_connection(self, source_morph: Morph, px: float, py: float) -> None:
+        self._connecting_source = source_morph
+        self._connecting_pos = (px, py)
+        self.status_message = f"Drag arrow from {source_morph.__class__.__name__} to a target Morph..."
+        self.changed()
+
+    def connect_morphs(self, source_morph: Morph, target_morph: Morph) -> Optional[Any]:
+        from .connectors import ConnectionArrowMorph
+
+        if source_morph is None or target_morph is None or source_morph is target_morph:
+            return None
+        if hasattr(target_morph, "accepts_stream") and not target_morph.accepts_stream(source_morph):
+            self.status_message = f"{target_morph.__class__.__name__} does not accept stream from {source_morph.__class__.__name__}"
+            return None
+        conns = getattr(self, "connections", None)
+        if conns is None:
+            self.connections = []
+            conns = self.connections
+        # Replace existing connection into the same target from the same source
+        self.connections = [c for c in conns if not (c.source is source_morph and c.target is target_morph)]
+        arrow = ConnectionArrowMorph(source_morph, target_morph)
+        self.connections.append(arrow)
+        if hasattr(target_morph, "connect_stream"):
+            ref = getattr(source_morph, "reference", source_morph)
+            target_morph.connect_stream(ref)
+        self.status_message = f"Connected {source_morph.__class__.__name__} -> {target_morph.__class__.__name__}"
+        self.changed()
+        return arrow
+
+    def disconnect_connection(self, conn: Any) -> None:
+        conns = getattr(self, "connections", [])
+        if conn in conns:
+            conns.remove(conn)
+            if hasattr(conn.target, "disconnect_stream"):
+                conn.target.disconnect_stream(getattr(conn.source, "reference", conn.source))
+            self.status_message = f"Disconnected {conn.source.__class__.__name__} -> {conn.target.__class__.__name__}"
+            self.changed()
+
     def full_draw_on(self, canvas: DisplayCanvas) -> None:
         self.draw_on(canvas)
         for sub in self.submorphs:
             if sub.visible:
-                sub.full_draw_on(canvas)
+                try:
+                    sub.full_draw_on(canvas)
+                except Exception as exc:
+                    if self.smalltalk is not None and hasattr(self.smalltalk, "capture_exception"):
+                        if getattr(sub, "_last_draw_err", None) != str(exc):
+                            sub._last_draw_err = str(exc)
+                            self.smalltalk.capture_exception(exc, context=f"draw:{sub.__class__.__name__}", target_class=sub.__class__.__name__)
+                    canvas.fill_round_rect(sub.x, sub.y, max(40.0, sub.width), max(24.0, sub.height), 4.0, "#3b2328", "#bf616a", 1.5)
+                    canvas.draw_text(f"{sub.__class__.__name__} draw error", sub.x + 8, sub.y + 18, color="#eceff4", font="11px sans-serif")
+
+        # Draw persistent data-stream connection arrows
+        conns = getattr(self, "connections", None)
+        if conns:
+            alive = [c for c in conns if c.source.owner is not None and c.target.owner is not None]
+            if len(alive) != len(conns):
+                self.connections = alive
+            for conn in alive:
+                conn.draw_on(canvas)
+
+        # Draw in-progress rubber-band connection arrow
+        src = getattr(self, "_connecting_source", None)
+        if src is not None:
+            sx, sy = src.output_port_center() if hasattr(src, "output_port_center") else (src.x + src.width, src.y + src.height * 0.5)
+            tx, ty = getattr(self, "_connecting_pos", (sx, sy))
+            canvas.draw_line(sx, sy, tx, ty, "#ebcb8b", 2.5)
+            canvas.fill_circle(tx, ty, 5.0, "#ebcb8b", "#14171d", 1.2)
 
         # Draw top menu bar on top of desktop
         self._draw_menubar(canvas)
@@ -425,6 +512,12 @@ class WorldMorph(Morph):
                     self.changed()
                     return
 
+        # 3.5 Check connection arrow midpoint disconnect button
+        for conn in list(getattr(self, "connections", [])):
+            if conn.is_disconnect_hit(px, py):
+                self.disconnect_connection(conn)
+                return
+
         # 4. Find deepest visible Morph under cursor
         target = self.morph_at(px, py) or self
 
@@ -475,6 +568,11 @@ class WorldMorph(Morph):
         self.hand.last_x = px
         self.hand.last_y = py
 
+        if getattr(self, "_connecting_source", None) is not None:
+            self._connecting_pos = (px, py)
+            self.changed()
+            return
+
         if self.hand.drag_target is not None:
             t = self.hand.drag_target
             if self.hand.drag_mode == "move":
@@ -504,6 +602,20 @@ class WorldMorph(Morph):
         self.hand.last_x = px
         self.hand.last_y = py
         self.hand.drag_target = None
+        src = getattr(self, "_connecting_source", None)
+        if src is not None:
+            self._connecting_source = None
+            self.hand.pressed_morph = None
+            target = self.morph_at(px, py)
+            while target is not None and target is not self:
+                if hasattr(target, "connect_stream") or hasattr(target, "accepts_stream"):
+                    self.connect_morphs(src, target)
+                    self.changed()
+                    return
+                target = target.owner
+            self.status_message = "Connection cancelled (drop onto a stream-accepting Morph)"
+            self.changed()
+            return
         if self.hand.pressed_morph is not None:
             m = self.hand.pressed_morph
             self.hand.pressed_morph = None

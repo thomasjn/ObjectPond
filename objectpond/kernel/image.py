@@ -568,6 +568,10 @@ class ImageSerializer:
                 SplitPaneMorph,
             )
             from objectpond.morphic.sound import SampledSound, SoundSynth, ADSR
+            from objectpond.kernel.references import ExternalReference, FileReference, UrlReference
+            from objectpond.morphic.connectors import ResourceIconMorph, FileMorph, UrlMorph, ConnectionArrowMorph
+            from objectpond.morphic.hex_editor import HexEditorMorph
+            from objectpond.morphic.midi_player import MidiPlayerMorph
             from objectpond.tools.browser import SystemBrowserWindow
             from objectpond.tools.workspace import WorkspaceWindow
             from objectpond.tools.inspector import InspectorWindow
@@ -579,6 +583,15 @@ class ImageSerializer:
                 ("Media-Sound", SampledSound),
                 ("Media-Sound", SoundSynth),
                 ("Media-Sound", ADSR),
+                ("Kernel-Objects", ExternalReference),
+                ("Kernel-Objects", FileReference),
+                ("Kernel-Objects", UrlReference),
+                ("Morphic-Widgets", ResourceIconMorph),
+                ("Morphic-Widgets", FileMorph),
+                ("Morphic-Widgets", UrlMorph),
+                ("Morphic-Widgets", ConnectionArrowMorph),
+                ("Morphic-Widgets", HexEditorMorph),
+                ("Morphic-Widgets", MidiPlayerMorph),
                 ("Morphic-Widgets", TextInputMorph),
                 ("Morphic-Widgets", CheckboxMorph),
                 ("Morphic-Widgets", ToggleSwitchMorph),
