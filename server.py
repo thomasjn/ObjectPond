@@ -211,6 +211,29 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
                 return False
         return True
 
+    def _resolve_fs_query(self) -> Optional[Path]:
+        query = parse_qs(urlparse(self.path).query)
+        anchor = (query.get("anchor") or ["assets"])[0]
+        rel_path = (query.get("path") or [""])[0].lstrip("/")
+        anchors = {
+            "assets": (BASE_DIR / "assets").resolve(),
+            "image_dir": BASE_DIR.resolve(),
+            "workspace": BASE_DIR.resolve(),
+        }
+        root = anchors.get(anchor)
+        if root is None or not rel_path:
+            self._send_json(400, {"error": "Invalid anchor or path"})
+            return None
+        try:
+            target = (root / rel_path).resolve()
+        except Exception as exc:
+            self._send_json(400, {"error": str(exc)})
+            return None
+        if not target.is_relative_to(root) or any(part.startswith(".") for part in target.relative_to(root).parts):
+            self._send_json(403, {"error": "Access denied"})
+            return None
+        return target
+
     def _read_body(self) -> Optional[bytes]:
         raw_len = self.headers.get("Content-Length", "0")
         try:
@@ -284,23 +307,10 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_path == "/api/fs/read":
-            query = parse_qs(urlparse(self.path).query)
-            anchor = (query.get("anchor") or ["assets"])[0]
-            rel_path = (query.get("path") or [""])[0].lstrip("/")
-            anchors = {
-                "assets": (BASE_DIR / "assets").resolve(),
-                "image_dir": BASE_DIR.resolve(),
-                "workspace": BASE_DIR.resolve(),
-            }
-            root = anchors.get(anchor)
-            if root is None or not rel_path:
-                self._send_json(400, {"error": "Invalid anchor or path"})
+            target = self._resolve_fs_query()
+            if target is None:
                 return
             try:
-                target = (root / rel_path).resolve()
-                if not target.is_relative_to(root) or any(part.startswith(".") for part in target.relative_to(root).parts):
-                    self._send_json(403, {"error": "Access denied"})
-                    return
                 if not target.is_file():
                     self._send_json(404, {"error": "File not found"})
                     return
@@ -476,6 +486,26 @@ class ObjectPondHandler(SimpleHTTPRequestHandler):
                 self._send_json(200, {"status": "ok", "bytes_saved": len(body)})
             except Exception as exc:
                 self._send_json(500, {"status": "error", "message": str(exc)})
+            return
+
+        if parsed_path == "/api/fs/write":
+            if not self._check_request_security(require_auth=True):
+                return
+            target = self._resolve_fs_query()
+            if target is None:
+                return
+            body = self._read_body()
+            if body is None:
+                return
+            if len(body) > MAX_REF_FETCH_BYTES:
+                self._send_json(413, {"error": "Payload exceeds 16 MB limit"})
+                return
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(body)
+                self._send_json(200, {"status": "ok", "bytes_written": len(body)})
+            except Exception as exc:
+                self._send_json(500, {"error": str(exc)})
             return
 
         self.send_response(404)

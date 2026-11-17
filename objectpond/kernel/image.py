@@ -571,6 +571,7 @@ class ImageSerializer:
             from objectpond.kernel.references import ExternalReference, FileReference, UrlReference
             from objectpond.morphic.connectors import ResourceIconMorph, FileMorph, UrlMorph, ConnectionArrowMorph
             from objectpond.morphic.hex_editor import HexEditorMorph
+            from objectpond.morphic.markdown_editor import MarkdownEditorMorph
             from objectpond.morphic.midi_player import MidiPlayerMorph
             from objectpond.tools.browser import SystemBrowserWindow
             from objectpond.tools.workspace import WorkspaceWindow
@@ -591,6 +592,7 @@ class ImageSerializer:
                 ("Morphic-Widgets", UrlMorph),
                 ("Morphic-Widgets", ConnectionArrowMorph),
                 ("Morphic-Widgets", HexEditorMorph),
+                ("Morphic-Widgets", MarkdownEditorMorph),
                 ("Morphic-Widgets", MidiPlayerMorph),
                 ("Morphic-Widgets", TextInputMorph),
                 ("Morphic-Widgets", CheckboxMorph),

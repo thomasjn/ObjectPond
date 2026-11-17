@@ -25,6 +25,23 @@ def _browser_fetch_sync(url: str) -> bytes:
     return bytes(ord(ch) & 0xFF for ch in txt)
 
 
+def _browser_post_sync(url: str, data: bytes, content_type: str = "application/octet-stream") -> bytes:
+    """Synchronous binary POST inside Pyodide browser via XMLHttpRequest."""
+    import js  # type: ignore
+
+    xhr = js.XMLHttpRequest.new()
+    xhr.open("POST", url, False)
+    xhr.setRequestHeader("Content-Type", content_type)
+    token = getattr(js.window, "OBJECTPOND_AUTH_TOKEN", None)
+    if token:
+        xhr.setRequestHeader("Authorization", f"Bearer {token}")
+    arr = js.Uint8Array.new(list(data))
+    xhr.send(arr)
+    if xhr.status < 200 or xhr.status >= 300:
+        raise IOError(f"HTTP {xhr.status} posting to {url}")
+    return (xhr.responseText or "").encode("utf-8")
+
+
 class ExternalReference:
     """
     Portable descriptor for an external resource (file or URL).
@@ -115,6 +132,21 @@ class FileReference(ExternalReference):
             return _browser_fetch_sync(f"/api/fs/read?{qs}")
         local_path = self.resolve_local_path()
         return local_path.read_bytes()
+
+    def write_bytes(self, data: bytes) -> None:
+        raw = bytes(data)
+        if _is_pyodide():
+            qs = urllib.parse.urlencode({"anchor": self.anchor, "path": self.path})
+            _browser_post_sync(f"/api/fs/write?{qs}", raw)
+        else:
+            local_path = self.resolve_local_path()
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(raw)
+        self._cached_bytes = raw
+        self._last_error = None
+
+    def write_text(self, text: str, encoding: str = "utf-8") -> None:
+        self.write_bytes(str(text).encode(encoding))
 
     def display_name(self) -> str:
         return self.label or Path(self.path).name or "file"

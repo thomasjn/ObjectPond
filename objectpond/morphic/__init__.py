@@ -2,6 +2,7 @@ from .canvas import Form, DisplayCanvas, RecordingBackend, JSCanvasBackend
 from .sound import SampledSound, SoundSynth, ADSR, note_to_hz
 from .connectors import ResourceIconMorph, FileMorph, UrlMorph, ConnectionArrowMorph
 from .hex_editor import HexEditorMorph
+from .markdown_editor import MarkdownEditorMorph
 from .midi_player import MidiPlayerMorph
 from .morph import Morph
 from .world import WorldMorph, HandMorph, HaloMorph

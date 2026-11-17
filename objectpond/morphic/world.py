@@ -214,6 +214,7 @@ class WorldMorph(Morph):
         from ..kernel.references import FileReference, UrlReference
         from .connectors import FileMorph, UrlMorph, ConnectionArrowMorph
         from .hex_editor import HexEditorMorph
+        from .markdown_editor import MarkdownEditorMorph
         from .midi_player import MidiPlayerMorph
 
         transcript = TranscriptProxy(self)
@@ -230,6 +231,7 @@ class WorldMorph(Morph):
         self.workspace_globals["UrlMorph"] = UrlMorph
         self.workspace_globals["ConnectionArrowMorph"] = ConnectionArrowMorph
         self.workspace_globals["HexEditorMorph"] = HexEditorMorph
+        self.workspace_globals["MarkdownEditorMorph"] = MarkdownEditorMorph
         self.workspace_globals["MidiPlayerMorph"] = MidiPlayerMorph
         if smalltalk is not None:
             self.workspace_globals["Smalltalk"] = smalltalk
@@ -246,6 +248,7 @@ class WorldMorph(Morph):
             smalltalk.global_namespace["UrlMorph"] = UrlMorph
             smalltalk.global_namespace["ConnectionArrowMorph"] = ConnectionArrowMorph
             smalltalk.global_namespace["HexEditorMorph"] = HexEditorMorph
+            smalltalk.global_namespace["MarkdownEditorMorph"] = MarkdownEditorMorph
             smalltalk.global_namespace["MidiPlayerMorph"] = MidiPlayerMorph
             smalltalk.global_namespace["ADSR"] = ADSR
             for cls_name, rec in smalltalk.classes.items():
@@ -764,6 +767,7 @@ class WorldMorph(Morph):
             ("Open Sound Studio", lambda: self.open_sound_studio()),
             ("New Bouncing Atoms Morph", lambda: self.spawn_bouncing_atoms()),
             ("New BitBlt Paint Morph", lambda: self.spawn_bitblt_paint()),
+            ("New Markdown Editor", lambda: self.spawn_markdown_editor()),
             ("Open Widget Showcase", lambda: self.spawn_widget_showcase()),
             ("Save Live Image (IndexedDB + Server)", lambda: self.trigger_host_action("save_image")),
             ("Download .image File", lambda: self.trigger_host_action("export_image")),
@@ -880,3 +884,11 @@ class WorldMorph(Morph):
         win = cls(self)
         self.add_morph(win)
         return win
+
+    def spawn_markdown_editor(self) -> Optional[Morph]:
+        from .markdown_editor import MarkdownEditorMorph
+
+        cls = self._resolve_class("MarkdownEditorMorph", MarkdownEditorMorph)
+        ed = cls(x=180, y=90)
+        self.add_morph(ed)
+        return ed

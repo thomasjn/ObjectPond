@@ -89,6 +89,8 @@ class ResourceIconMorph(Morph):
     def _badge_color(self, badge: str) -> str:
         if badge in ("MID", "MIDI", "WAV"):
             return "#d4af37"
+        if badge in ("MD", "MARK", "TXT", "RST"):
+            return "#a3be8c"
         if badge in ("PNG", "JPG", "GIF", "BMP"):
             return "#b48ead"
         if badge in ("URL", "HTML", "JSON"):

@@ -11,6 +11,7 @@ from objectpond.morphic.canvas import DisplayCanvas, RecordingBackend
 from objectpond.morphic.software_canvas import SoftwareCanvasBackend
 from objectpond.morphic.connectors import ConnectionArrowMorph, FileMorph, UrlMorph
 from objectpond.morphic.hex_editor import HexEditorMorph
+from objectpond.morphic.markdown_editor import MarkdownEditorMorph
 from objectpond.morphic.midi_player import MidiPlayerMorph
 from objectpond.morphic.midi import parse_midi_bytes
 from objectpond.morphic.morph import Morph
@@ -217,6 +218,118 @@ class TestReferencesAndConnectors(unittest.TestCase):
         # 52 white keys + 36 black keys = 88 key rects (plus background/frame rects)
         rect_count = sum(1 for c in canvas.backend.commands if c[0] == "fill_rect")
         self.assertGreaterEqual(rect_count, 88)
+
+    def test_markdown_editor_stream_connection_edit_preview_and_save(self):
+        import uuid
+        from pathlib import Path
+
+        assets_dir = FileReference.ANCHORS["assets"]
+        fname = f"_test_note_{uuid.uuid4().hex[:8]}.md"
+        fpath = assets_dir / fname
+        initial_md = "# Hello Pond\n\nSome **bold** and `code` with [link](https://example.com).\n\n- Item A\n> Quoted\n\n```python\nx = 1\n```\n"
+        fpath.write_text(initial_md, encoding="utf-8")
+        try:
+            st = SystemDictionary()
+            world = WorldMorph(1000, 700, smalltalk=st)
+
+            fm = FileMorph(anchor="assets", path=fname, x=20, y=100)
+            md = MarkdownEditorMorph(x=200, y=80, width=620, height=380)
+            downstream = HexEditorMorph(x=840, y=80, width=140, height=200)
+            world.add_morph(fm)
+            world.add_morph(md)
+            world.add_morph(downstream)
+
+            # Port-drag FileMorph -> MarkdownEditorMorph
+            ox, oy = fm.output_port_center()
+            world.handle_mouse_down(ox, oy, 0)
+            world.handle_mouse_move(md.x + 120, md.y + 120)
+            world.handle_mouse_up(md.x + 120, md.y + 120, 0)
+
+            self.assertEqual(len(world.connections), 1)
+            self.assertEqual(md.editor.text, initial_md)
+            self.assertFalse(md.dirty)
+
+            # Connect MarkdownEditorMorph -> HexEditorMorph
+            world.connect_morphs(md, downstream)
+            self.assertEqual(downstream.read_bytes().decode("utf-8"), initial_md)
+
+            # Edit via key event and verify dirty, downstream passthrough, and preview rendering
+            md.on_key_down("!")
+            self.assertTrue(md.dirty)
+            self.assertTrue(downstream.read_bytes().decode("utf-8").startswith("!"))
+
+            canvas = DisplayCanvas(RecordingBackend())
+            world.full_draw_on(canvas)
+            cmd_str = str(canvas.backend.commands)
+            self.assertIn("Hello Pond", cmd_str)
+            self.assertIn("Item A", cmd_str)
+            self.assertIn("x = 1", cmd_str)
+
+            # Mode switching & Revert
+            md.set_mode("preview")
+            self.assertFalse(md.editor.visible)
+            md.set_mode("edit")
+            self.assertTrue(md.editor.visible)
+            md.set_mode("split")
+
+            md.revert()
+            self.assertFalse(md.dirty)
+            self.assertEqual(md.editor.text, initial_md)
+
+            # Edit and Save back to disk
+            md.editor.text = "# Saved Title\n"
+            md.save()
+            self.assertFalse(md.dirty)
+            self.assertEqual(Path(fpath).read_text(encoding="utf-8"), "# Saved Title\n")
+
+            # Image snapshot roundtrip
+            ser = ImageSerializer(st)
+            restored = ser.load_image_bytes(ser.save_image_bytes(world))
+            restored_md = [m for m in restored.submorphs if isinstance(m, MarkdownEditorMorph)][0]
+            self.assertEqual(restored_md.editor.text, "# Saved Title\n")
+            self.assertEqual(len(restored.connections), 2)
+        finally:
+            if fpath.exists():
+                fpath.unlink()
+
+    def test_server_fs_write_endpoint_and_traversal_guard(self):
+        import json
+        import uuid
+
+        assets_dir = FileReference.ANCHORS["assets"]
+        fname = f"_test_write_{uuid.uuid4().hex[:8]}.md"
+        fpath = assets_dir / fname
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), ObjectPondHandler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/fs/write?anchor=assets&path={fname}",
+                data=b"# Written via API\n",
+                method="POST",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                payload = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(payload["status"], "ok")
+            self.assertEqual(fpath.read_bytes(), b"# Written via API\n")
+
+            bad_req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/fs/write?anchor=assets&path=../evil.md",
+                data=b"nope",
+                method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(bad_req, timeout=5)
+            self.assertEqual(ctx.exception.code, 403)
+        finally:
+            server.shutdown()
+            server.server_close()
+            if fpath.exists():
+                fpath.unlink()
 
 
 if __name__ == "__main__":

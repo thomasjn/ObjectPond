@@ -1,6 +1,7 @@
 import ast
 import keyword
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from .canvas import DisplayCanvas
 from .morph import Morph
@@ -614,6 +615,41 @@ class CodeEditorMorph(Morph):
         thumb_x = track_x + ratio * (track_w - thumb_w)
         return (track_x, track_y, track_w, track_h, thumb_x, thumb_w)
 
+    def _word_bounds_at(self, idx: int) -> Tuple[int, int]:
+        n = len(self.text)
+        if n == 0:
+            return (0, 0)
+        pos = max(0, min(n - 1, idx))
+        if idx == n and n > 0:
+            pos = n - 1
+
+        def is_word(ch: str) -> bool:
+            return ch.isalnum() or ch == "_"
+
+        if not is_word(self.text[pos]) and pos > 0 and is_word(self.text[pos - 1]):
+            pos -= 1
+
+        ch = self.text[pos]
+        if is_word(ch):
+            lo = pos
+            hi = pos + 1
+            while lo > 0 and is_word(self.text[lo - 1]):
+                lo -= 1
+            while hi < n and is_word(self.text[hi]):
+                hi += 1
+            return (lo, hi)
+        if ch in (" ", "\t"):
+            lo = pos
+            hi = pos + 1
+            while lo > 0 and self.text[lo - 1] in (" ", "\t"):
+                lo -= 1
+            while hi < n and self.text[hi] in (" ", "\t"):
+                hi += 1
+            return (lo, hi)
+        if ch == "\n":
+            return (pos, pos)
+        return (pos, pos + 1)
+
     def on_mouse_down(self, px: float, py: float, button: int) -> None:
         if button == 0:
             ac_rect = self._ac_popup_rect()
@@ -659,9 +695,28 @@ class CodeEditorMorph(Morph):
                 return
 
             idx = self._point_to_index(px, py)
-            self.cursor_idx = idx
-            self.selection_start = idx
-            self.selection_end = idx
+            now = time.monotonic()
+            last_t = getattr(self, "_last_click_time", 0.0)
+            last_p = getattr(self, "_last_click_pos", None)
+            if (
+                now - last_t <= 0.40
+                and last_p is not None
+                and ((px - last_p[0]) ** 2 + (py - last_p[1]) ** 2) <= 25.0
+            ):
+                lo, hi = self._word_bounds_at(idx)
+                self.selection_start = lo
+                self.selection_end = hi
+                self.cursor_idx = hi
+                self._last_click_time = 0.0
+                self._last_click_pos = None
+                self._word_selecting = True
+            else:
+                self.cursor_idx = idx
+                self.selection_start = idx
+                self.selection_end = idx
+                self._last_click_time = now
+                self._last_click_pos = (px, py)
+                self._word_selecting = False
             self.ensure_cursor_visible()
             self.changed()
 
@@ -692,6 +747,9 @@ class CodeEditorMorph(Morph):
                 self.changed()
             return
 
+        if getattr(self, "_word_selecting", False):
+            return
+
         # Auto-scroll when drag-selecting above or below the viewport
         if py < self.y + 4.0:
             self.scroll_line = max(0, self.scroll_line - 1)
@@ -706,6 +764,7 @@ class CodeEditorMorph(Morph):
     def on_mouse_up(self, px: float, py: float, button: int) -> None:
         self._dragging_scrollbar = False
         self._dragging_hscrollbar = False
+        self._word_selecting = False
 
     def on_mouse_wheel(self, px: float, py: float, delta_y: float) -> None:
         if delta_y == 0:

@@ -411,6 +411,21 @@ class TestMorphicAndWidgets(unittest.TestCase):
         ed.on_key_down("Escape")
         self.assertEqual(ed._ac_items, [])
 
+    def test_code_editor_double_click_word_selection(self):
+        ed = CodeEditorMorph(x=0, y=0, width=400, height=160, text="alpha_one = beta_two + 42")
+        self.world.add_morph(ed)
+        # Click inside 'beta_two' (starts at index 12)
+        cx = ed.x + ed.GUTTER_WIDTH + 6.0 + 14 * ed.CHAR_WIDTH
+        cy = ed.y + 10.0
+        ed.on_mouse_down(cx, cy, 0)
+        ed.on_mouse_up(cx, cy, 0)
+        self.assertFalse(ed.has_selection())
+        ed.on_mouse_down(cx, cy, 0)
+        ed.on_mouse_move(cx + 1.0, cy, 1.0, 0.0)
+        ed.on_mouse_up(cx + 1.0, cy, 0)
+        lo, hi = ed.get_selection_range()
+        self.assertEqual(ed.text[lo:hi], "beta_two")
+
     def test_transient_attrs_and_changes_compact(self):
         class BaseCachedMorph(Morph):
             _transient_attrs = ("_base_cache",)
