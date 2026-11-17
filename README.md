@@ -1,3 +1,4 @@
+<img width="1608" height="945" alt="ObjectPond_Screenshot" src="https://github.com/user-attachments/assets/5ba78491-85e8-4d4b-b409-9d7122f5865b" />
 # ObjectPond
 
 **ObjectPond** is a zero-dependency, live, image-based Python Morphic development environment. It runs interactively in the browser via Pyodide WebAssembly (`index.html` + `vm.js`) backed by a local Python HTTP + MCP server (`server.py`), with a pure-Python headless fallback (`SoftwareCanvasBackend`).
