@@ -1,6 +1,7 @@
 import ast
 from typing import Any, List, Optional
 from objectpond.morphic.widgets import SystemWindowMorph, ListMorph, CodeEditorMorph, ButtonMorph
+from objectpond.morphic.app_widgets import TextInputMorph
 
 
 class SystemBrowserWindow(SystemWindowMorph):
@@ -34,6 +35,25 @@ class SystemBrowserWindow(SystemWindowMorph):
         self.selected_class_name: Optional[str] = None
         self.selected_protocol: Optional[str] = None
         self.selected_method_name: Optional[str] = None
+
+        # Class Search Bar
+        self.search_input = TextInputMorph(
+            x=x + 4,
+            y=y + 30,
+            width=width - 66,
+            height=24,
+            placeholder="Search classes across all categories... (Cmd/Ctrl+F)",
+            on_change=self._on_search_changed,
+            on_submit=self._on_search_submitted,
+        )
+        self.clear_search_btn = ButtonMorph(
+            "Clear",
+            x=x + width - 58,
+            y=y + 30,
+            width=54,
+            height=24,
+            on_click=self.clear_search,
+        )
 
         # 4 Top Panes
         self.category_list = ListMorph(
@@ -130,6 +150,8 @@ class SystemBrowserWindow(SystemWindowMorph):
         )
 
         # Add all submorphs
+        self.add_morph(self.search_input)
+        self.add_morph(self.clear_search_btn)
         self.add_morph(self.category_list)
         self.add_morph(self.class_list)
         self.add_morph(self.protocol_list)
@@ -147,16 +169,7 @@ class SystemBrowserWindow(SystemWindowMorph):
         self.refresh_categories()
 
         if initial_class:
-            found_cat = None
-            if self.smalltalk:
-                rec = self.smalltalk.get_class_record(initial_class)
-                if rec:
-                    found_cat = rec.category
-                else:
-                    for cat, classes in self.smalltalk.categories.items():
-                        if initial_class in classes:
-                            found_cat = cat
-                            break
+            found_cat = self._find_category_for_class(initial_class)
             if found_cat:
                 self.select_category(found_cat)
             self.select_class(initial_class)
@@ -175,6 +188,86 @@ class SystemBrowserWindow(SystemWindowMorph):
     @smalltalk.setter
     def smalltalk(self, val: Any) -> None:
         self._smalltalk = val
+
+    def _find_category_for_class(self, cls_name: str) -> Optional[str]:
+        if not self.smalltalk or not cls_name:
+            return None
+        rec = self.smalltalk.get_class_record(cls_name)
+        if rec is not None:
+            return rec.category
+        for cat, classes in self.smalltalk.categories.items():
+            if cls_name in classes:
+                return cat
+        return None
+
+    def _all_class_names(self) -> List[str]:
+        if not self.smalltalk:
+            return []
+        seen = set()
+        names: List[str] = []
+        for cat in self.smalltalk.get_categories():
+            for cls_name in self.smalltalk.get_classes_in_category(cat):
+                if cls_name not in seen:
+                    seen.add(cls_name)
+                    names.append(cls_name)
+        return names
+
+    def _on_search_changed(self, query: str) -> None:
+        q = query.strip().lower()
+        if not q:
+            classes = (
+                self.smalltalk.get_classes_in_category(self.selected_category)
+                if self.smalltalk and self.selected_category
+                else []
+            )
+            self.class_list.set_items(classes)
+            if self.selected_class_name in classes:
+                self.class_list.select_value(self.selected_class_name, notify=False)
+            else:
+                self.class_list.select_index(-1, notify=False)
+            return
+
+        all_names = self._all_class_names()
+        prefix = sorted(n for n in all_names if n.lower().startswith(q))
+        substr = sorted(n for n in all_names if q in n.lower() and not n.lower().startswith(q))
+        matches = prefix + substr
+        self.class_list.set_items(matches)
+        if self.selected_class_name in matches:
+            self.class_list.select_value(self.selected_class_name, notify=False)
+        else:
+            self.class_list.select_index(-1, notify=False)
+
+    def _on_search_submitted(self, query: str) -> None:
+        self._on_search_changed(query)
+        if self.class_list.items:
+            self.select_class(self.class_list.items[0])
+
+    def clear_search(self) -> None:
+        if hasattr(self, "search_input"):
+            self.search_input.set_text("", notify=False)
+        self._on_search_changed("")
+        self.changed()
+
+    def on_key_down(
+        self,
+        key: str,
+        ctrl_key: bool = False,
+        meta_key: bool = False,
+        shift_key: bool = False,
+        alt_key: bool = False,
+    ) -> None:
+        if (ctrl_key or meta_key) and key.lower() == "f":
+            w = self.world()
+            if w is not None and hasattr(self, "search_input"):
+                w.hand.focus_morph = self.search_input
+                self.changed()
+            return
+        if key == "Escape" and hasattr(self, "search_input") and self.search_input.text:
+            self.clear_search()
+            return
+        super().on_key_down(
+            key, ctrl_key=ctrl_key, meta_key=meta_key, shift_key=shift_key, alt_key=alt_key
+        )
 
     def refresh_categories(self) -> None:
         cats = self.smalltalk.get_categories() if self.smalltalk else []
@@ -318,6 +411,8 @@ class SystemBrowserWindow(SystemWindowMorph):
 
     def select_category(self, cat: Optional[str]) -> None:
         self.selected_category = cat
+        if hasattr(self, "search_input") and self.search_input.text:
+            self.search_input.set_text("", notify=False)
         if cat is not None:
             self.category_list.select_value(cat, notify=False)
             classes = self.smalltalk.get_classes_in_category(cat) if self.smalltalk else []
@@ -337,6 +432,10 @@ class SystemBrowserWindow(SystemWindowMorph):
         self.selected_class_name = cls_name
         base = getattr(self, "base_title", "System Browser")
         if cls_name is not None and self.smalltalk is not None:
+            found_cat = self._find_category_for_class(cls_name)
+            if found_cat and found_cat != self.selected_category:
+                self.selected_category = found_cat
+                self.category_list.select_value(found_cat, notify=False)
             self.class_list.select_value(cls_name, notify=False)
             self.title = f"{base}: {cls_name}"
             protocols = self.smalltalk.get_protocols(cls_name)
@@ -468,20 +567,33 @@ class SystemBrowserWindow(SystemWindowMorph):
         content_w = max(100.0, self.width - 8.0)
         content_h = max(100.0, self.height - self.TITLEBAR_HEIGHT - 8.0)
 
-        top_h = max(60.0, min(140.0, content_h * 0.36))
+        search_h = 24.0
+        clear_w = 54.0
+        if hasattr(self, "search_input") and hasattr(self, "clear_search_btn"):
+            self.search_input.set_bounds(
+                content_x, content_y, max(60.0, content_w - clear_w - 4.0), search_h
+            )
+            self.clear_search_btn.set_bounds(
+                content_x + max(60.0, content_w - clear_w), content_y, clear_w, search_h
+            )
+            panes_y = content_y + search_h + 4.0
+        else:
+            panes_y = content_y
+
+        top_h = max(56.0, min(132.0, (content_h - (panes_y - content_y)) * 0.34))
         pane_spacing = 3.0
         pane_w = max(20.0, (content_w - (3.0 * pane_spacing)) / 4.0)
 
-        self.category_list.set_bounds(content_x, content_y, pane_w, top_h)
-        self.class_list.set_bounds(content_x + pane_w + pane_spacing, content_y, pane_w, top_h)
+        self.category_list.set_bounds(content_x, panes_y, pane_w, top_h)
+        self.class_list.set_bounds(content_x + pane_w + pane_spacing, panes_y, pane_w, top_h)
         self.protocol_list.set_bounds(
-            content_x + 2 * (pane_w + pane_spacing), content_y, pane_w, top_h
+            content_x + 2 * (pane_w + pane_spacing), panes_y, pane_w, top_h
         )
         self.method_list.set_bounds(
-            content_x + 3 * (pane_w + pane_spacing), content_y, pane_w, top_h
+            content_x + 3 * (pane_w + pane_spacing), panes_y, pane_w, top_h
         )
 
-        btn_y = content_y + top_h + 4.0
+        btn_y = panes_y + top_h + 4.0
         btn_h = 24.0
         bx = content_x
         for btn in [

@@ -112,6 +112,38 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         new_ws = self.smalltalk.get_class("WorkspaceWindow")(self.world)
         self.assertEqual(new_ws.title, "Live Scratchpad")
 
+    def test_system_browser_class_search_and_navigation(self):
+        browser = SystemBrowserWindow(self.world)
+        self.world.add_morph(browser)
+
+        # Start in a category that does not contain BouncingAtomsMorph
+        browser.select_category("Kernel-Objects")
+        self.assertNotIn("BouncingAtomsMorph", browser.class_list.items)
+
+        # Type partial query across all categories
+        browser.search_input.set_text("bouncing", notify=True)
+        self.assertIn("BouncingAtomsMorph", browser.class_list.items)
+
+        # Submit jumps to first match and auto-selects its owning category
+        browser.search_input.on_submit(browser.search_input.text)
+        self.assertEqual(browser.selected_class_name, "BouncingAtomsMorph")
+        self.assertEqual(browser.selected_category, "User-Objects")
+        self.assertEqual(
+            browser.category_list.items[browser.category_list.selected_index],
+            "User-Objects",
+        )
+        self.assertIn("class BouncingAtomsMorph", browser.editor.text)
+
+        # Clearing search restores category-scoped class_list
+        browser.clear_search()
+        self.assertEqual(browser.search_input.text, "")
+        self.assertIn("BouncingAtomsMorph", browser.class_list.items)
+        self.assertIn("BitBltPaintMorph", browser.class_list.items)
+
+        # Cmd/Ctrl+F focuses search_input
+        browser.on_key_down("f", ctrl_key=True)
+        self.assertIs(self.world.hand.focus_morph, browser.search_input)
+
     def test_inspector_live_object_mutation(self):
         atoms = BouncingAtomsMorph(100, 100, 200, 150)
         inspector = InspectorWindow(self.world, atoms)
@@ -226,7 +258,7 @@ class TestToolsAndBootEnvironment(unittest.TestCase):
         # 2. Hot-update Morph & SystemBrowserWindow and verify submorphs are never duplicated
         morph_src = self.smalltalk.get_class_definition_source("Morph")
         self.smalltalk.define_class("Morphic-Core", morph_src)
-        self.assertEqual(len(browser.submorphs), 11)
+        self.assertEqual(len(browser.submorphs), 13)
         self.assertIs(self.world.morph_at(enlarged_x, enlarged_y), browser.editor)
 
         # 3. Alt+Click inside a background window and resize via Halo 'resize' handle
